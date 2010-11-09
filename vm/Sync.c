@@ -203,11 +203,9 @@ void dvmFreeMonitorList(void)
  */
 void dvmDumpMonitorInfo(const char* msg)
 {
-#if QUIET_ZYGOTE_MONITOR
     if (gDvm.zygote) {
         return;
     }
-#endif
 
     int totalCount;
     int liveCount;
