@@ -1375,13 +1375,15 @@ bool dvmCreateInterpThread(Object* threadObj, int reqStackSize)
                     gDvm.offJavaLangThread_name);
         char* threadName = dvmCreateCstrFromString(nameStr);
         bool profilerThread = strcmp(threadName, "SamplingProfiler") == 0;
-        free(threadName);
         if (!profilerThread) {
-            dvmThrowException("Ljava/lang/IllegalStateException;",
-                "No new threads in -Xzygote mode");
+            dvmThrowExceptionFmt("Ljava/lang/IllegalStateException;",
+                "No new threads in -Xzygote mode. "
+                "Found thread named '%s'", threadName);
 
+            free(threadName);
             goto fail;
         }
+        free(threadName);
     }
 
     self = dvmThreadSelf();
