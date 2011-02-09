@@ -100,7 +100,7 @@ void jniSetFileDescriptorOfFD(C_JNIEnv* env, jobject fileDescriptor, int value);
  * For C++ code, we provide inlines that map to the C functions.  g++ always
  * inlines these, even on non-optimized builds.
  */
-#if defined(__cplusplus) && !defined(JNI_FORCE_C)
+#if defined(__cplusplus)
 inline int jniRegisterNativeMethods(JNIEnv* env, const char* className,
     const JNINativeMethod* gMethods, int numMethods)
 {
