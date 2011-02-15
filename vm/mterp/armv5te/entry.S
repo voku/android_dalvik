@@ -118,6 +118,7 @@ dvmMterpStdRun:
     bl      printf
     bl      dvmAbort
     .fnend
+    .size   dvmMterpStdRun, .-dvmMterpStdRun
 
 
     .global dvmMterpStdBail
