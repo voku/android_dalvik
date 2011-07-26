@@ -269,7 +269,7 @@ endif
 MTERP_ARCH_KNOWN := false
 
 ifeq ($(dvm_arch),arm)
-  #dvm_arch_variant := armv7-a
+  dvm_arch_variant := armv6-vfp
   LOCAL_CFLAGS += -march=armv6zk -mfloat-abi=softfp -mfpu=vfp
   MTERP_ARCH_KNOWN := true
   # Select architecture-specific sources (armv4t, armv5te etc.)
