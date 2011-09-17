@@ -400,7 +400,7 @@ static void logContentionEvent(Thread *self, u4 waitMs, u4 samplePercent)
 
     /* Emit self thread name string, <= 37 bytes. */
     selfName = dvmGetThreadName(self);
-if (selfName != NULL) {
+    if (selfName != NULL) {
       /* Csaba Miklos : dvmGetThreadName can return NULL, in this case the whole dalvik collapses. */
       cp = logWriteString(cp, selfName, strlen(selfName));
       free(selfName);
@@ -455,7 +455,7 @@ static void lockMonitor(Thread* self, Monitor* mon)
             waitEnd = dvmGetRelativeTimeUsec();
         }
         dvmChangeStatus(self, oldStatus);
-        if (waitThreshold) {
+        if (waitThreshold && self->curFrame != NULL) {
             waitMs = (waitEnd - waitStart) / 1000;
             if (waitMs >= waitThreshold) {
                 samplePercent = 100;

@@ -337,9 +337,6 @@ dalvik_mterp:
     movl        %ecx, -4(%esp)          # push parameter method to call
     movl        rGLUE, %ecx             # %ecx<- pMterpGlue
     movl        offGlue_self(%ecx), %ecx # %ecx<- glue->self
-    movl        %ecx, -8(%esp)          # push parameter self
-    lea         -8(%esp), %esp
-    call        dvmHandleStackOverflow  # call: (Thread* self, Method* method)
                                         # return: void
     lea         8(%esp), %esp
     jmp         common_exceptionThrown  # handle exception
