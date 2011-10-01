@@ -1525,7 +1525,6 @@ const Method *dvmJitToPatchPredictedChain(const Method *method,
     newCell.branch = assembleChainingBranch(branchOffset, true);
     newCell.clazz = clazz;
     newCell.method = method;
-    newCell.stagedClazz = NULL;
     newCell.counter = PREDICTED_CHAIN_COUNTER_RECHAIN;
 
     /*
