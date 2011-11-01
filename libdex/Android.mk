@@ -26,7 +26,6 @@ dex_src_files := \
 	InstrUtils.c \
 	Leb128.c \
 	OptInvocation.c \
-	sha1.c \
 	SysUtil.c \
 	ZipArchive.c
 
@@ -56,7 +55,7 @@ else
   dvm_make_debug_vm := $(DEBUG_DALVIK_VM)
 endif
 
-LOCAL_SRC_FILES := $(dex_src_files)
+LOCAL_SRC_FILES := $(dex_src_files) sha1.c
 LOCAL_C_INCLUDES += $(dex_include_files)
 LOCAL_CFLAGS += -include "dalvikdefines.h"
 ifeq ($(dvm_make_debug_vm),false)
