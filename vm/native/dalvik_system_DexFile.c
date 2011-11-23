@@ -75,7 +75,7 @@ static bool validateCookie(int cookie)
     if (pDexOrJar == NULL)
         return false;
 
-    u4 hash = cookie;
+    u4 hash = dvmComputeUtf8Hash(pDexOrJar->fileName);
     dvmHashTableLock(gDvm.userDexFiles);
     void* result = dvmHashTableLookup(gDvm.userDexFiles, hash, pDexOrJar,
                 hashcmpDexOrJar, false);
@@ -105,8 +105,6 @@ static bool validateCookie(int cookie)
  * To optimize this away we could search for existing entries in the hash
  * table and refCount them.  Requires atomic ops or adding "synchronized"
  * to the non-native code that calls here.
- *
- * TODO: should be using "long" for a pointer.
  */
 static void Dalvik_dalvik_system_DexFile_openDexFile(const u4* args,
     JValue* pResult)
@@ -170,14 +168,12 @@ static void Dalvik_dalvik_system_DexFile_openDexFile(const u4* args,
         pDexOrJar = (DexOrJar*) malloc(sizeof(DexOrJar));
         pDexOrJar->isDex = true;
         pDexOrJar->pRawDexFile = pRawDexFile;
-        pDexOrJar->pDexMemory = NULL;
     } else if (dvmJarFileOpen(sourceName, outputName, &pJarFile, false) == 0) {
         LOGV("Opening DEX file '%s' (Jar)\n", sourceName);
 
         pDexOrJar = (DexOrJar*) malloc(sizeof(DexOrJar));
         pDexOrJar->isDex = false;
         pDexOrJar->pJarFile = pJarFile;
-        pDexOrJar->pDexMemory = NULL;
     } else {
         LOGV("Unable to open DEX file '%s'\n", sourceName);
         dvmThrowException("Ljava/io/IOException;", "unable to open DEX file");
@@ -186,17 +182,8 @@ static void Dalvik_dalvik_system_DexFile_openDexFile(const u4* args,
     if (pDexOrJar != NULL) {
         pDexOrJar->fileName = sourceName;
 
-        /*
-         * Add to hash table.
-         *
-         * Later on we will receive this pointer as an argument and need
-         * to find it in the hash table without knowing if it's valid or
-         * not, which means we can't compute a hash value from anything
-         * inside DexOrJar.  We don't share DexOrJar structs when the same
-         * file is opened multiple times, so we can just use the low 32
-         * bits of the pointer as the hash.
-         */
-        u4 hash = (u4) pDexOrJar;
+        /* add to hash table */
+        u4 hash = dvmComputeUtf8Hash(sourceName);
         void* result;
         dvmHashTableLock(gDvm.userDexFiles);
         result = dvmHashTableLookup(gDvm.userDexFiles, hash, pDexOrJar,
@@ -227,10 +214,11 @@ static void Dalvik_dalvik_system_DexFile_closeDexFile(const u4* args,
 
     if (pDexOrJar == NULL)
         RETURN_VOID();
-    if (!validateCookie(cookie))
-        RETURN_VOID();
 
     LOGV("Closing DEX file %p (%s)\n", pDexOrJar, pDexOrJar->fileName);
+
+    if (!validateCookie(cookie))
+        RETURN_VOID();
 
     /*
      * We can't just free arbitrary DEX files because they have bits and
@@ -241,7 +229,7 @@ static void Dalvik_dalvik_system_DexFile_closeDexFile(const u4* args,
      * them when the VM shuts down.
      */
     if (pDexOrJar->okayToFree) {
-        u4 hash = (u4) pDexOrJar;
+        u4 hash = dvmComputeUtf8Hash(pDexOrJar->fileName);
         dvmHashTableLock(gDvm.userDexFiles);
         if (!dvmHashTableRemove(gDvm.userDexFiles, hash, pDexOrJar)) {
             LOGW("WARNING: could not remove '%s' from DEX hash table\n",
