@@ -58,7 +58,7 @@ static inline bool findBlockBoundary(const Method *caller, MIR *insn,
                                      unsigned int *target, bool *isInvoke,
                                      const Method **callee)
 {
-    switch (insn->dalvikInsn.opCode) {
+    switch (insn->dalvikInsn.opcode) {
         /* Target is not compile-time constant */
         case OP_RETURN_VOID:
         case OP_RETURN:
@@ -156,7 +156,7 @@ static inline bool findBlockBoundary(const Method *caller, MIR *insn,
 
 static inline bool isGoto(MIR *insn)
 {
-    switch (insn->dalvikInsn.opCode) {
+    switch (insn->dalvikInsn.opcode) {
         case OP_GOTO:
         case OP_GOTO_16:
         case OP_GOTO_32:
@@ -171,7 +171,7 @@ static inline bool isGoto(MIR *insn)
  */
 static inline bool isUnconditionalBranch(MIR *insn)
 {
-    switch (insn->dalvikInsn.opCode) {
+    switch (insn->dalvikInsn.opcode) {
         case OP_RETURN_VOID:
         case OP_RETURN:
         case OP_RETURN_WIDE:
@@ -497,7 +497,7 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
         }
 
         int flags = dexGetInstrFlags(gDvm.instrFlags,
-                                     lastInsn->dalvikInsn.opCode);
+                                     lastInsn->dalvikInsn.opcode);
 
         /*
          * Some blocks are ended by non-control-flow-change instructions,
@@ -510,7 +510,7 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
         curBB->needFallThroughBranch =
             ((flags & (kInstrCanBranch | kInstrCanSwitch | kInstrCanReturn |
                        kInstrInvoke)) == 0) ||
-            (lastInsn->dalvikInsn.opCode == OP_INVOKE_DIRECT_EMPTY);
+            (lastInsn->dalvikInsn.opcode == OP_INVOKE_DIRECT_EMPTY);
 
         if (curBB->taken == NULL &&
             curBB->fallThrough == NULL &&
@@ -571,8 +571,8 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
             cUnit.hasLoop = true;
         }
 
-        if (lastInsn->dalvikInsn.opCode == OP_PACKED_SWITCH ||
-            lastInsn->dalvikInsn.opCode == OP_SPARSE_SWITCH) {
+        if (lastInsn->dalvikInsn.opcode == OP_PACKED_SWITCH ||
+            lastInsn->dalvikInsn.opcode == OP_SPARSE_SWITCH) {
             int i;
             const u2 *switchData = desc->method->insns + lastInsn->offset +
                              lastInsn->dalvikInsn.vB;
@@ -590,7 +590,7 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
             }
 
             s4 *targets = (s4 *) (switchData + 2 +
-                    (lastInsn->dalvikInsn.opCode == OP_PACKED_SWITCH ?
+                    (lastInsn->dalvikInsn.opcode == OP_PACKED_SWITCH ?
                      2 : size * 2));
 
             /* One chaining cell for the first MAX_CHAINED_SWITCH_CASES cases */

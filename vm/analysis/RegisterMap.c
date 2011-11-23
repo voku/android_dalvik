@@ -2501,7 +2501,7 @@ static bool handleInstruction(WorkState* pState, SRegType* workRegs,
     SRegType tmpType;
 
     dexDecodeInstruction(gDvm.instrFormat, insns, &decInsn);
-    const int nextFlags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opCode);
+    const int nextFlags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opcode);
 
     /*
      * Make a copy of the previous register state.  If the instruction
@@ -2515,7 +2515,7 @@ static bool handleInstruction(WorkState* pState, SRegType* workRegs,
         copyRegisters(entryRegs, workRegs, insnRegCountPlus);
     }
 
-    switch (decInsn.opCode) {
+    switch (decInsn.opcode) {
     case OP_NOP:
         break;
 

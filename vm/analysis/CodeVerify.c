@@ -3357,8 +3357,8 @@ static bool doCodeVerification(Method* meth, InsnFlags* insnFlags,
         {
             static const int gcMask = kInstrCanBranch | kInstrCanSwitch |
                                       kInstrCanThrow | kInstrCanReturn;
-            OpCode opCode = *(meth->insns + insnIdx) & 0xff;
-            int flags = dexGetInstrFlags(gDvm.instrFlags, opCode);
+            OpCode opcode = *(meth->insns + insnIdx) & 0xff;
+            int flags = dexGetInstrFlags(gDvm.instrFlags, opcode);
 
             /* 8, 16, 32, or 32*n -bit regs */
             int regWidth = (meth->registersSize + 7) / 8;
@@ -3518,7 +3518,7 @@ static bool verifyInstruction(Method* meth, InsnFlags* insnFlags,
 #endif
     dexDecodeInstruction(gDvm.instrFormat, insns, &decInsn);
 
-    int nextFlags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opCode);
+    int nextFlags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opcode);
 
     /*
      * Make a copy of the previous register state.  If the instruction
@@ -3537,7 +3537,7 @@ static bool verifyInstruction(Method* meth, InsnFlags* insnFlags,
 #endif
     }
 
-    switch (decInsn.opCode) {
+    switch (decInsn.opcode) {
     case OP_NOP:
         /*
          * A "pure" NOP has no effect on anything.  Data tables start with
@@ -3903,7 +3903,7 @@ static bool verifyInstruction(Method* meth, InsnFlags* insnFlags,
             LOG_VFY("VFY: filled-new-array on non-array class\n");
             failure = VERIFY_ERROR_GENERIC;
         } else {
-            bool isRange = (decInsn.opCode == OP_FILLED_NEW_ARRAY_RANGE);
+            bool isRange = (decInsn.opcode == OP_FILLED_NEW_ARRAY_RANGE);
 
             /* check the arguments to the instruction */
             verifyFilledNewArrayRegs(meth, workRegs, insnRegCount, &decInsn,
@@ -4993,10 +4993,10 @@ sput_1nr_common:
             bool isRange;
             bool isSuper;
 
-            isRange =  (decInsn.opCode == OP_INVOKE_VIRTUAL_RANGE ||
-                        decInsn.opCode == OP_INVOKE_SUPER_RANGE);
-            isSuper =  (decInsn.opCode == OP_INVOKE_SUPER ||
-                        decInsn.opCode == OP_INVOKE_SUPER_RANGE);
+            isRange =  (decInsn.opcode == OP_INVOKE_VIRTUAL_RANGE ||
+                        decInsn.opcode == OP_INVOKE_SUPER_RANGE);
+            isSuper =  (decInsn.opcode == OP_INVOKE_SUPER ||
+                        decInsn.opcode == OP_INVOKE_SUPER_RANGE);
 
             calledMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_VIRTUAL, isRange,
@@ -5015,7 +5015,7 @@ sput_1nr_common:
             Method* calledMethod;
             bool isRange;
 
-            isRange =  (decInsn.opCode == OP_INVOKE_DIRECT_RANGE);
+            isRange =  (decInsn.opcode == OP_INVOKE_DIRECT_RANGE);
             calledMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_DIRECT, isRange,
                             false, &failure);
@@ -5097,7 +5097,7 @@ sput_1nr_common:
             Method* calledMethod;
             bool isRange;
 
-            isRange =  (decInsn.opCode == OP_INVOKE_STATIC_RANGE);
+            isRange =  (decInsn.opcode == OP_INVOKE_STATIC_RANGE);
             calledMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_STATIC, isRange,
                             false, &failure);
@@ -5116,7 +5116,7 @@ sput_1nr_common:
             Method* absMethod;
             bool isRange;
 
-            isRange =  (decInsn.opCode == OP_INVOKE_INTERFACE_RANGE);
+            isRange =  (decInsn.opcode == OP_INVOKE_INTERFACE_RANGE);
             absMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_INTERFACE, isRange,
                             false, &failure);
@@ -5496,15 +5496,15 @@ sput_1nr_common:
         if (failure == VERIFY_ERROR_GENERIC || gDvm.optimizing) {
             /* immediate failure, reject class */
             LOG_VFY_METH(meth, "VFY:  rejecting opcode 0x%02x at 0x%04x\n",
-                decInsn.opCode, insnIdx);
+                decInsn.opcode, insnIdx);
             goto bail;
         } else {
             /* replace opcode and continue on */
             LOGD("VFY: replacing opcode 0x%02x at 0x%04x\n",
-                decInsn.opCode, insnIdx);
+                decInsn.opcode, insnIdx);
             if (!replaceFailingInstruction(meth, insnFlags, insnIdx, failure)) {
                 LOG_VFY_METH(meth, "VFY:  rejecting opcode 0x%02x at 0x%04x\n",
-                    decInsn.opCode, insnIdx);
+                    decInsn.opcode, insnIdx);
                 goto bail;
             }
             /* IMPORTANT: meth->insns may have been changed */

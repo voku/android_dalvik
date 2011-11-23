@@ -193,7 +193,7 @@ static ArmLIR *genExportPC(CompilationUnit *cUnit, MIR *mir)
 static void genMonitorEnter(CompilationUnit *cUnit, MIR *mir)
 {
     RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
-    bool enter = (mir->dalvikInsn.opCode == OP_MONITOR_ENTER);
+    bool enter = (mir->dalvikInsn.opcode == OP_MONITOR_ENTER);
     ArmLIR *target;
     ArmLIR *hopTarget;
     ArmLIR *branch;
@@ -308,7 +308,7 @@ static void genMonitorExit(CompilationUnit *cUnit, MIR *mir)
 
 static void genMonitor(CompilationUnit *cUnit, MIR *mir)
 {
-    if (mir->dalvikInsn.opCode == OP_MONITOR_ENTER)
+    if (mir->dalvikInsn.opcode == OP_MONITOR_ENTER)
         genMonitorEnter(cUnit, mir);
     else
         genMonitorExit(cUnit, mir);

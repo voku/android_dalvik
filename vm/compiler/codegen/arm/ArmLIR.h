@@ -306,7 +306,7 @@ typedef enum ArmConditionCode {
     kArmCondNv = 0xf,    /* 1111 */
 } ArmConditionCode;
 
-#define isPseudoOpCode(opCode) ((int)(opCode) < 0)
+#define isPseudoOpCode(opcode) ((int)(opcode) < 0)
 
 /*
  * The following enum defines the list of supported Thumb instructions by the
@@ -717,7 +717,7 @@ typedef struct ArmEncodingMap {
         int end;   /* end for kFmtBitBlt, 1-bit slice end for FP regs */
         int start; /* start for kFmtBitBlt, 4-bit slice end for FP regs */
     } fieldLoc[4];
-    ArmOpCode opCode;
+    ArmOpCode opcode;
     int flags;
     char *name;
     char* fmt;
@@ -747,7 +747,7 @@ extern ArmEncodingMap EncodingMap[kArmLast];
  */
 typedef struct ArmLIR {
     LIR generic;
-    ArmOpCode opCode;
+    ArmOpCode opcode;
     int operands[4];    // [0..3] = [dest, src1, src2, extra]
     bool isNop;         // LIR is optimized away
     bool branchInsertSV;// mark for insertion of branch before this instruction,
