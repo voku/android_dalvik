@@ -1060,6 +1060,9 @@ DataKeys* parseKeys(FILE *fp, int verbose)
     if (offset < 0)
         goto fail;
 
+    /* Reduce our allocation now that we know where the end of the key section is. */
+    pKeys->fileData = (char *)realloc(pKeys->fileData, offset);
+    pKeys->fileLen = offset;
     /* Leave fp pointing to the beginning of the data section. */
     fseek(fp, offset, SEEK_SET);
 
@@ -1171,7 +1174,7 @@ MethodEntry* lookupMethod(DataKeys* pKeys, unsigned int methodId)
 
     /* Create cache if it doesn't already exist */
     if (pKeys->methodCache == NULL) {
-        pKeys->methodCache = (int*) calloc(METHOD_CACHE_SIZE, sizeof(int));
+        pKeys->methodCache = (int*) malloc(sizeof(int) * METHOD_CACHE_SIZE);
     }
 
     // ids are multiples of 4, so shift
@@ -3599,7 +3602,6 @@ int main(int argc, char** argv)
     }
 
     TraceData data1;
-    memset(&data1, 0, sizeof(data1));
     DataKeys* dataKeys = parseDataKeys(&data1, gOptions.traceFileName,
                                        &sumThreadTime, filters);
     if (dataKeys == NULL) {

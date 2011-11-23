@@ -329,6 +329,10 @@ static bool dvmPopFrame(Thread* self)
                 saveBlock->method->name,
                 (SAVEAREA_FROM_FP(saveBlock->prevFrame)->method == NULL) ?
                 "" : " (JNI local)");
+            assert(saveBlock->xtra.localRefCookie != 0);
+            //assert(saveBlock->xtra.localRefCookie >= self->jniLocalRefTable.table &&
+            //    saveBlock->xtra.localRefCookie <=self->jniLocalRefTable.nextEntry);
+
             dvmPopJniLocals(self, saveBlock);
         }
 
@@ -662,7 +666,6 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     s4* ins;
     int verifyCount, argListLength;
     JValue retval;
-    bool needPop = false;
 
     /* verify arg count */
     if (argList != NULL)
@@ -680,7 +683,6 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     clazz = callPrep(self, method, obj, !noAccessCheck);
     if (clazz == NULL)
         return NULL;
-    needPop = true;
 
     /* "ins" for new frame start at frame pointer plus locals */
     ins = ((s4*)self->curFrame) + (method->registersSize - method->insSize);
@@ -716,10 +718,9 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
                     (*(types-1))->descriptor);
             }
             dvmPopFrame(self);      // throw wants to pull PC out of stack
-            needPop = false;
             dvmThrowException("Ljava/lang/IllegalArgumentException;",
                 "argument type mismatch");
-            goto bail;
+            goto bail_popped;
         }
 
         ins += width;
@@ -751,13 +752,6 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     }
 
     /*
-     * Pop the frame immediately.  The "wrap" calls below can cause
-     * allocations, and we don't want the GC to walk the now-dead frame.
-     */
-    dvmPopFrame(self);
-    needPop = false;
-
-    /*
      * If an exception is raised, wrap and replace.  This is necessary
      * because the invoked method could have thrown a checked exception
      * that the caller wasn't prepared for.
@@ -782,9 +776,8 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     }
 
 bail:
-    if (needPop) {
-        dvmPopFrame(self);
-    }
+    dvmPopFrame(self);
+bail_popped:
     return retObj;
 }
 
@@ -1105,7 +1098,7 @@ void dvmCleanupStackOverflow(Thread* self, const Object* exception)
  *
  * The other thread might be alive, so this has to work carefully.
  *
- * The thread list lock must be held.
+ * We assume the thread list lock is currently held.
  *
  * Returns "true" if we successfully recover the object.  "*pOwner" will
  * be NULL if we can't determine the owner for some reason (e.g. race
@@ -1200,13 +1193,6 @@ static void dumpFrames(const DebugOutputTarget* target, void* framePtr,
     bool first = true;
 
     /*
-     * We call functions that require us to be holding the thread list lock.
-     * It's probable that the caller has already done so, but it's not
-     * guaranteed.  If it's not locked, lock it now.
-     */
-    bool needThreadUnlock = dvmTryLockThreadList();
-
-    /*
      * The "currentPc" is updated whenever we execute an instruction that
      * might throw an exception.  Show it here.
      */
@@ -1257,19 +1243,9 @@ static void dumpFrames(const DebugOutputTarget* target, void* framePtr,
                     Monitor* mon = thread->waitMonitor;
                     Object* obj = dvmGetMonitorObject(mon);
                     if (obj != NULL) {
-                        Thread* joinThread = NULL;
                         className = dvmDescriptorToDot(obj->clazz->descriptor);
-                        if (strcmp(className, "java.lang.VMThread") == 0) {
-                            joinThread = dvmGetThreadFromThreadObject(obj);
-                        }
-                        if (joinThread == NULL) {
-                            dvmPrintDebugMessage(target,
-                                "  - waiting on <%p> (a %s)\n", obj, className);
-                        } else {
-                            dvmPrintDebugMessage(target,
-                                "  - waiting on <%p> (a %s) tid=%d\n",
-                                obj, className, joinThread->threadId);
-                        }
+                        dvmPrintDebugMessage(target,
+                            "  - waiting on <%p> (a %s)\n", obj, className);
                         free(className);
                     }
                 } else if (thread->status == THREAD_MONITOR) {
@@ -1320,10 +1296,6 @@ static void dumpFrames(const DebugOutputTarget* target, void* framePtr,
         }
     }
     dvmPrintDebugMessage(target, "\n");
-
-    if (needThreadUnlock) {
-        dvmUnlockThreadList();
-    }
 }
 
 

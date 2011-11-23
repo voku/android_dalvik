@@ -60,30 +60,23 @@
 #endif
 
 /*
- * Some architectures require 64-bit alignment for access to 64-bit data
- * types.  We can't just use pointers to copy 64-bit values out of our
- * interpreted register set, because gcc may assume the pointer target is
- * aligned and generate invalid code.
+ * ARM EABI requires 64-bit alignment for access to 64-bit data types.  We
+ * can't just use pointers to copy 64-bit values out of our interpreted
+ * register set, because gcc will generate ldrd/strd.
  *
- * There are two common approaches:
- *  (1) Use a union that defines a 32-bit pair and a 64-bit value.
- *  (2) Call memcpy().
- *
- * Depending upon what compiler you're using and what options are specified,
- * one may be faster than the other.  For example, the compiler might
- * convert a memcpy() of 8 bytes into a series of instructions and omit
- * the call.  The union version could cause some strange side-effects,
- * e.g. for a while ARM gcc thought it needed separate storage for each
- * inlined instance, and generated instructions to zero out ~700 bytes of
- * stack space at the top of the interpreter.
- *
- * The default is to use memcpy().  The current gcc for ARM seems to do
- * better with the union.
+ * The __UNION version copies data in and out of a union.  The __MEMCPY
+ * version uses a memcpy() call to do the transfer; gcc is smart enough to
+ * not actually call memcpy().  The __UNION version is very bad on ARM;
+ * it only uses one more instruction than __MEMCPY, but for some reason
+ * gcc thinks it needs separate storage for every instance of the union.
+ * On top of that, it feels the need to zero them out at the start of the
+ * method.  Net result is we zero out ~700 bytes of stack space at the top
+ * of the interpreter using ARM STM instructions.
  */
 #if defined(__ARM_EABI__)
-# define NO_UNALIGN_64__UNION
+//# define NO_UNALIGN_64__UNION
+# define NO_UNALIGN_64__MEMCPY
 #endif
-
 
 //#define LOG_INSTR                   /* verbose debugging */
 /* set and adjust ANDROID_LOG_TAGS='*:i jdwp:i dalvikvm:i dalvikvmi:i' */
@@ -180,10 +173,12 @@ static inline s8 getLongFromArray(const u4* ptr, int idx)
     conv.parts[0] = ptr[0];
     conv.parts[1] = ptr[1];
     return conv.ll;
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     s8 val;
     memcpy(&val, &ptr[idx], 8);
     return val;
+#else
+    return *((s8*) &ptr[idx]);
 #endif
 }
 
@@ -197,8 +192,10 @@ static inline void putLongToArray(u4* ptr, int idx, s8 val)
     conv.ll = val;
     ptr[0] = conv.parts[0];
     ptr[1] = conv.parts[1];
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     memcpy(&ptr[idx], &val, 8);
+#else
+    *((s8*) &ptr[idx]) = val;
 #endif
 }
 
@@ -212,10 +209,12 @@ static inline double getDoubleFromArray(const u4* ptr, int idx)
     conv.parts[0] = ptr[0];
     conv.parts[1] = ptr[1];
     return conv.d;
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     double dval;
     memcpy(&dval, &ptr[idx], 8);
     return dval;
+#else
+    return *((double*) &ptr[idx]);
 #endif
 }
 
@@ -229,8 +228,10 @@ static inline void putDoubleToArray(u4* ptr, int idx, double dval)
     conv.d = dval;
     ptr[0] = conv.parts[0];
     ptr[1] = conv.parts[1];
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     memcpy(&ptr[idx], &dval, 8);
+#else
+    *((double*) &ptr[idx]) = dval;
 #endif
 }
 
@@ -3055,8 +3056,9 @@ bool dvmMterpStdRun(MterpGlue* glue)
      */
     changeInterp = setjmp(jmpBuf) -1;
     if (changeInterp >= 0) {
+        Thread* threadSelf = dvmThreadSelf();
         LOGVV("mterp threadid=%d returning %d\n",
-            dvmThreadSelf()->threadId, changeInterp);
+            threadSelf->threadId, changeInterp);
         return changeInterp;
     }
 
@@ -3088,13 +3090,11 @@ bool dvmMterpStdRun(MterpGlue* glue)
 
         u2 inst = /*glue->*/pc[0];
         Handler handler = (Handler) gDvmMterpHandlers[inst & 0xff];
-        (void) gDvmMterpHandlerNames;   /* avoid gcc "defined but not used" */
         LOGVV("handler %p %s\n",
             handler, (const char*) gDvmMterpHandlerNames[inst & 0xff]);
         (*handler)(glue);
     }
 }
-
 
 /*
  * C mterp exit point.  Call here to bail out of the interpreter.

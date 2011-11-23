@@ -33,7 +33,7 @@
  * Make sure that the given cache can hold a string of the given length,
  * including the final '\0' byte.
  */
-void dexStringCacheAlloc(DexStringCache* pCache, size_t length) {
+static void dexStringCacheAlloc(DexStringCache* pCache, size_t length) {
     if (pCache->allocatedSize != 0) {
         if (pCache->allocatedSize >= length) {
             return;

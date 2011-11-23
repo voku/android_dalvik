@@ -58,7 +58,7 @@ static inline bool findBlockBoundary(const Method *caller, MIR *insn,
                                      unsigned int *target, bool *isInvoke,
                                      const Method **callee)
 {
-    switch (insn->dalvikInsn.opcode) {
+    switch (insn->dalvikInsn.opCode) {
         /* Target is not compile-time constant */
         case OP_RETURN_VOID:
         case OP_RETURN:
@@ -156,7 +156,7 @@ static inline bool findBlockBoundary(const Method *caller, MIR *insn,
 
 static inline bool isGoto(MIR *insn)
 {
-    switch (insn->dalvikInsn.opcode) {
+    switch (insn->dalvikInsn.opCode) {
         case OP_GOTO:
         case OP_GOTO_16:
         case OP_GOTO_32:
@@ -171,7 +171,7 @@ static inline bool isGoto(MIR *insn)
  */
 static inline bool isUnconditionalBranch(MIR *insn)
 {
-    switch (insn->dalvikInsn.opcode) {
+    switch (insn->dalvikInsn.opCode) {
         case OP_RETURN_VOID:
         case OP_RETURN:
         case OP_RETURN_WIDE:
@@ -497,7 +497,7 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
         }
 
         int flags = dexGetInstrFlags(gDvm.instrFlags,
-                                     lastInsn->dalvikInsn.opcode);
+                                     lastInsn->dalvikInsn.opCode);
 
         /*
          * Some blocks are ended by non-control-flow-change instructions,
@@ -510,7 +510,7 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
         curBB->needFallThroughBranch =
             ((flags & (kInstrCanBranch | kInstrCanSwitch | kInstrCanReturn |
                        kInstrInvoke)) == 0) ||
-            (lastInsn->dalvikInsn.opcode == OP_INVOKE_DIRECT_EMPTY);
+            (lastInsn->dalvikInsn.opCode == OP_INVOKE_DIRECT_EMPTY);
 
         if (curBB->taken == NULL &&
             curBB->fallThrough == NULL &&
@@ -571,8 +571,8 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
             cUnit.hasLoop = true;
         }
 
-        if (lastInsn->dalvikInsn.opcode == OP_PACKED_SWITCH ||
-            lastInsn->dalvikInsn.opcode == OP_SPARSE_SWITCH) {
+        if (lastInsn->dalvikInsn.opCode == OP_PACKED_SWITCH ||
+            lastInsn->dalvikInsn.opCode == OP_SPARSE_SWITCH) {
             int i;
             const u2 *switchData = desc->method->insns + lastInsn->offset +
                              lastInsn->dalvikInsn.vB;
@@ -590,7 +590,7 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
             }
 
             s4 *targets = (s4 *) (switchData + 2 +
-                    (lastInsn->dalvikInsn.opcode == OP_PACKED_SWITCH ?
+                    (lastInsn->dalvikInsn.opCode == OP_PACKED_SWITCH ?
                      2 : size * 2));
 
             /* One chaining cell for the first MAX_CHAINED_SWITCH_CASES cases */
@@ -632,16 +632,13 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
         if (curBB->taken == NULL &&
             (isGoto(lastInsn) || isInvoke ||
             (targetOffset != UNKNOWN_TARGET && targetOffset != curOffset))) {
-            BasicBlock *newBB = NULL;
+            BasicBlock *newBB;
             if (isInvoke) {
                 /* Monomorphic callee */
                 if (callee) {
-                    /* JNI call doesn't need a chaining cell */
-                    if (!dvmIsNativeMethod(callee)) {
-                        newBB = dvmCompilerNewBB(kChainingCellInvokeSingleton);
-                        newBB->startOffset = 0;
-                        newBB->containingMethod = callee;
-                    }
+                    newBB = dvmCompilerNewBB(kChainingCellInvokeSingleton);
+                    newBB->startOffset = 0;
+                    newBB->containingMethod = callee;
                 /* Will resolve at runtime */
                 } else {
                     newBB = dvmCompilerNewBB(kChainingCellInvokePredicted);
@@ -667,12 +664,10 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
                 newBB->startOffset = targetOffset;
 #endif
             }
-            if (newBB) {
-                newBB->id = numBlocks++;
-                curBB->taken = newBB;
-                lastBB->next = newBB;
-                lastBB = newBB;
-            }
+            newBB->id = numBlocks++;
+            curBB->taken = newBB;
+            lastBB->next = newBB;
+            lastBB = newBB;
         }
     }
 

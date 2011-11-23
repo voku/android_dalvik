@@ -281,7 +281,6 @@ bool dvmSetCloseOnExec(int fd);
  * it undecorated.
  */
 void dvmAbort(void);
-void dvmPrintNativeBackTrace(void);
 
 #if (!HAVE_STRLCPY)
 /* Implementation of strlcpy() for platforms that don't already have it. */

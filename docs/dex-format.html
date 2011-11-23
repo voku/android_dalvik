@@ -176,7 +176,7 @@ values are unlikely to be needed).</p>
     used by this file, either for internal naming (e.g., type descriptors)
     or as constant objects referred to by code. This list must be sorted
     by string contents, using UTF-16 code point values (not in a
-    locale-sensitive manner), and it must not contain any duplicate entries.
+    locale-sensitive manner).
   </td>
 </tr>
 <tr>
@@ -185,7 +185,7 @@ values are unlikely to be needed).</p>
   <td>type identifiers list. These are identifiers for all types (classes,
     arrays, or primitive types) referred to by this file, whether defined
     in the file or not. This list must be sorted by <code>string_id</code>
-    index, and it must not contain any duplicate entries.
+    index.
   </td>
 </tr>
 <tr>
@@ -194,8 +194,7 @@ values are unlikely to be needed).</p>
   <td>method prototype identifiers list. These are identifiers for all
     prototypes referred to by this file. This list must be sorted in
     return-type (by <code>type_id</code> index) major order, and then
-    by arguments (also by <code>type_id</code> index). The list must not
-    contain any duplicate entries.
+    by arguments (also by <code>type_id</code> index).
   </td>
 </tr>
 <tr>
@@ -206,7 +205,7 @@ values are unlikely to be needed).</p>
     list must be sorted, where the defining type (by <code>type_id</code>
     index) is the major order, field name (by <code>string_id</code> index)
     is the intermediate order, and type (by <code>type_id</code> index)
-    is the minor order. The list must not contain any duplicate entries.
+    is the minor order.
   </td>
 </tr>
 <tr>
@@ -216,9 +215,8 @@ values are unlikely to be needed).</p>
     referred to by this file, whether defined in the file or not. This
     list must be sorted, where the defining type (by <code>type_id</code>
     index) is the major order, method name (by <code>string_id</code>
-    index) is the intermediate order, and method prototype (by
-    <code>proto_id</code> index) is the minor order.  The list must not
-    contain any duplicate entries.
+    index) is the intermediate order, and method
+    prototype (by <code>proto_id</code> index) is the minor order.
   </td>
 </tr>
 <tr>
@@ -226,9 +224,7 @@ values are unlikely to be needed).</p>
   <td>class_def_item[]</td>
   <td>class definitions list. The classes must be ordered such that a given
     class's superclass and implemented interfaces appear in the
-    list earlier than the referring class. Furthermore, it is invalid for
-    a definition for the same-named class to appear more than once in
-    the list.
+    list earlier than the referring class.
   </td>
 </tr>
 <tr>
@@ -244,8 +240,8 @@ values are unlikely to be needed).</p>
   <td>link_data</td>
   <td>ubyte[]</td>
   <td>data used in statically linked files. The format of the data in
-    this section is left unspecified by this document.
-    This section is empty in unlinked files, and runtime implementations
+    this section is left unspecified by this document;
+    this section is empty in unlinked files, and runtime implementations
     may use it as they see fit.
   </td>
 </tr>
@@ -274,10 +270,10 @@ ubyte[8] DEX_FILE_MAGIC = { 0x64 0x65 0x78 0x0a 0x30 0x33 0x35 0x00 }
 <p><b>Note:</b> At least a couple earlier versions of the format have
 been used in widely-available public software releases. For example,
 version <code>009</code> was used for the M3 releases of the
-Android platform (November&ndash;December 2007),
+Android platform (November-December 2007),
 and version <code>013</code> was used for the M5 releases of the Android
-platform (February&ndash;March 2008). In several respects, these earlier
-versions of the format differ significantly from the version described in this
+platform (February-March 2008). In several respects, these earlier versions
+of the format differ significantly from the version described in this
 document.</p>
 
 <h2><code>ENDIAN_CONSTANT</code> and <code>REVERSE_ENDIAN_CONSTANT</code></h2>
@@ -315,7 +311,7 @@ uint NO_INDEX = 0xffffffff;    // == -1 if treated as a signed int
 
 <h2><code>access_flags</code> Definitions</h2>
 <h4>embedded in <code>class_def_item</code>,
-<code>encoded_field</code>, <code>encoded_method</code>, and
+<code>field_item</code>, <code>method_item</code>, and
 <code>InnerClass</code></h4>
 
 <p>Bitfields of these flags are used to indicate the accessibility and
@@ -831,7 +827,7 @@ indicate the acceptable syntax for these strings.</p>
 <p>A <i>SimpleName</i> is the basis for the syntax of the names of other
 things. The <code>.dex</code> format allows a fair amount of latitude
 here (much more than most common source languages). In brief, a simple
-name consists of any low-ASCII alphabetic character or digit, a few
+name may consist of any low-ASCII alphabetic character or digit, a few
 specific low-ASCII symbols, and most non-ASCII code points that are not
 control, space, or special characters. Note that surrogate code points
 (in the range <code>U+d800</code> &hellip; <code>U+dfff</code>) are not
@@ -1324,7 +1320,7 @@ may appear in a <code>.dex</code> file.
 <p>This is a list of the entire contents of a file, in order. It
 contains some redundancy with respect to the <code>header_item</code>
 but is intended to be an easy form to use to iterate over an entire
-file. A given type must appear at most once in a map, but there is no
+file. A given type may appear at most once in a map, but there is no
 restriction on what order types may appear in, other than the
 restrictions implied by the rest of the format (e.g., a
 <code>header</code> section must appear first, followed by a
@@ -2017,7 +2013,7 @@ be ordered by initial offset and must not overlap.</p>
 </table>
 
 <h2><code>code_item</code></h2>
-<h4>referenced from <code>encoded_method</code></h4>
+<h4>referenced from <code>method_item</code></h4>
 <h4>appears in the <code>data</code> section</h4>
 <h4>alignment: 4 bytes</h4>
 
@@ -2095,7 +2091,7 @@ be ordered by initial offset and must not overlap.</p>
 <tr>
   <td>tries</td>
   <td>try_item[tries_size] <i>(optional)</i></td>
-  <td>array indicating where in the code exceptions are caught and
+  <td>array indicating where in the code exceptions may be caught and
     how to handle them. Elements of the array must be non-overlapping in
     range and in order from low to high address. This element is only
     present if <code>tries_size</code> is non-zero.
@@ -2142,10 +2138,8 @@ be ordered by initial offset and must not overlap.</p>
 <tr>
   <td>handler_off</td>
   <td>ushort</td>
-  <td>offset in bytes from the start of the associated
-    <code>encoded_catch_hander_list</code> to the
-    <code>encoded_catch_handler</code> for this entry. This must be an
-    offset to the start of an <code>encoded_catch_handler</code>.
+  <td>offset in bytes from the start of the associated encoded handler data
+    to the <code>catch_handler_item</code> for this entry
   </td>
 </tr>
 </tbody>
@@ -2259,7 +2253,7 @@ with an <code>DBG_END_SEQUENCE</code> byte.</p>
 <code>address</code> register represents the instruction offset in the
 associated <code>insns_item</code> in 16-bit code units. The
 <code>address</code> register starts at <code>0</code> at the beginning of each
-<code>debug_info</code> sequence and must only monotonically increase.
+<code>debug_info</code> sequence and may only monotonically increase.
 The <code>line</code> register represents what source line number
 should be associated with the next positions table entry emitted by
 the state machine. It is initialized in the sequence header, and may
@@ -2871,7 +2865,7 @@ annotation interface which wishes to indicate default bindings.</p>
 which is either defined as a member of another class, per se, or is
 anonymous but not defined within a method body (e.g., a synthetic
 inner class). Every class that has this annotation must also have an
-<code>InnerClass</code> annotation. Additionally, a class must not have
+<code>InnerClass</code> annotation. Additionally, a class may not have
 both an <code>EnclosingClass</code> and an
 <code>EnclosingMethod</code> annotation.</p>
 
@@ -2898,7 +2892,7 @@ both an <code>EnclosingClass</code> and an
 <p>An <code>EnclosingMethod</code> annotation is attached to each class
 which is defined inside a method body. Every class that has this
 annotation must also have an <code>InnerClass</code> annotation.
-Additionally, a class must not have both an <code>EnclosingClass</code>
+Additionally, a class may not have both an <code>EnclosingClass</code>
 and an <code>EnclosingMethod</code> annotation.</p>
 
 <table class="format">

@@ -1052,9 +1052,9 @@ void dexDecodeInstruction(const InstructionFormat* fmts, const u2* insns,
 {
     u2 inst = *insns;
 
-    pDec->opcode = (OpCode) INST_INST(inst);
+    pDec->opCode = (OpCode) INST_INST(inst);
 
-    switch (dexGetInstrFormat(fmts, pDec->opcode)) {
+    switch (dexGetInstrFormat(fmts, pDec->opCode)) {
     case kFmt10x:       // op
         /* nothing to do; copy the AA bits out for the verifier */
         pDec->vA = INST_AA(inst);
@@ -1220,7 +1220,7 @@ void dexDecodeInstruction(const InstructionFormat* fmts, const u2* insns,
         break;
     default:
         LOGW("Can't decode unexpected format %d (op=%d)\n",
-            dexGetInstrFormat(fmts, pDec->opcode), pDec->opcode);
+            dexGetInstrFormat(fmts, pDec->opCode), pDec->opCode);
         assert(false);
         break;
     }

@@ -328,3 +328,4 @@ void dvmLogMadviseStats(size_t madvisedSizes[], size_t arrayLen)
     (void) android_btWriteLog(EVENT_LOG_TAG_dvm_gc_madvise_info,
             EVENT_TYPE_LIST, eventBuf, sizeof(eventBuf));
 }
+

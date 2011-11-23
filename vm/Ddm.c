@@ -285,13 +285,8 @@ void dvmDdmSendThreadNotification(Thread* thread, bool started)
     if (!gDvm.ddmThreadNotification)
         return;
 
-    StringObject* nameObj = NULL;
-    Object* threadObj = thread->threadObj;
-
-    if (threadObj != NULL) {
-        nameObj = (StringObject*)
-            dvmGetFieldObject(threadObj, gDvm.offJavaLangThread_name);
-    }
+    StringObject* nameObj = (StringObject*)
+        dvmGetFieldObject(thread->threadObj, gDvm.offJavaLangThread_name);
 
     int type, len;
     u1 buf[256];
@@ -504,18 +499,15 @@ ArrayObject* dvmDdmGenerateThreadStats(void)
     pid_t pid = getpid();
     for (thread = gDvm.threadList; thread != NULL; thread = thread->next) {
         unsigned long utime, stime;
-        bool isDaemon = false;
+        bool isDaemon;
 
         if (!getThreadStats(pid, thread->systemTid, &utime, &stime)) {
             // failed; drop in empty values
             utime = stime = 0;
         }
 
-        Object* threadObj = thread->threadObj;
-        if (threadObj != NULL) {
-            isDaemon = dvmGetFieldBoolean(threadObj,
-                            gDvm.offJavaLangThread_daemon);
-        }
+        isDaemon = dvmGetFieldBoolean(thread->threadObj,
+                        gDvm.offJavaLangThread_daemon);
 
         set4BE(buf+0, thread->threadId);
         set1(buf+4, thread->status);

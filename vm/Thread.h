@@ -286,8 +286,6 @@ Thread* dvmThreadSelf(void);
 
 /* grab the thread list global lock */
 void dvmLockThreadList(Thread* self);
-/* try to grab the thread list global lock */
-bool dvmTryLockThreadList(void);
 /* release the thread list global lock */
 void dvmUnlockThreadList(void);
 

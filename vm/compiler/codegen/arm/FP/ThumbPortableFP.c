@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-/* Forward-declare the portable versions due to circular dependency */
+/* Forward decalraton the portable versions due to circular dependency */
 static bool genArithOpFloatPortable(CompilationUnit *cUnit, MIR *mir,
                                     RegLocation rlDest, RegLocation rlSrc1,
                                     RegLocation rlSrc2);
@@ -24,8 +24,6 @@ static bool genArithOpDoublePortable(CompilationUnit *cUnit, MIR *mir,
                                      RegLocation rlSrc2);
 
 static bool genConversionPortable(CompilationUnit *cUnit, MIR *mir);
-
-static bool handleExecuteInlineC(CompilationUnit *cUnit, MIR *mir);
 
 static bool genConversion(CompilationUnit *cUnit, MIR *mir)
 {
@@ -59,7 +57,7 @@ static bool genCmpFP(CompilationUnit *cUnit, MIR *mir, RegLocation rlDest,
      * Don't attempt to optimize register usage since these opcodes call out to
      * the handlers.
      */
-    switch (mir->dalvikInsn.opcode) {
+    switch (mir->dalvikInsn.opCode) {
         case OP_CMPL_FLOAT:
             loadValueDirectFixed(cUnit, rlSrc1, r0);
             loadValueDirectFixed(cUnit, rlSrc2, r1);

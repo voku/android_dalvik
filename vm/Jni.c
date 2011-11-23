@@ -342,14 +342,19 @@ bool dvmJniStartup(void)
      * Look up and cache pointers to some direct buffer classes, fields,
      * and methods.
      */
+    ClassObject* platformAddressClass =
+        dvmFindSystemClassNoInit("Lorg/apache/harmony/luni/platform/PlatformAddress;");
+    ClassObject* platformAddressFactoryClass =
+        dvmFindSystemClassNoInit("Lorg/apache/harmony/luni/platform/PlatformAddressFactory;");
     ClassObject* directBufferClass =
-        dvmFindSystemClassNoInit("Ljava/nio/DirectBuffer;");
+        dvmFindSystemClassNoInit("Lorg/apache/harmony/nio/internal/DirectBuffer;");
     ClassObject* readWriteBufferClass =
         dvmFindSystemClassNoInit("Ljava/nio/ReadWriteDirectByteBuffer;");
     ClassObject* bufferClass =
         dvmFindSystemClassNoInit("Ljava/nio/Buffer;");
 
-    if (directBufferClass == NULL || readWriteBufferClass == NULL ||
+    if (platformAddressClass == NULL || platformAddressFactoryClass == NULL ||
+        directBufferClass == NULL || readWriteBufferClass == NULL ||
         bufferClass == NULL)
     {
         LOGE("Unable to find internal direct buffer classes\n");
@@ -357,6 +362,9 @@ bool dvmJniStartup(void)
     }
     gDvm.classJavaNioReadWriteDirectByteBuffer = readWriteBufferClass;
     gDvm.classOrgApacheHarmonyNioInternalDirectBuffer = directBufferClass;
+    /* need a global reference for extended CheckJNI tests */
+    gDvm.jclassOrgApacheHarmonyNioInternalDirectBuffer =
+        addGlobalReference((Object*) directBufferClass);
 
     /*
      * We need a Method* here rather than a vtable offset, because
@@ -365,21 +373,46 @@ bool dvmJniStartup(void)
     meth = dvmFindVirtualMethodByDescriptor(
                 gDvm.classOrgApacheHarmonyNioInternalDirectBuffer,
                 "getEffectiveAddress",
-                "()I");
+                "()Lorg/apache/harmony/luni/platform/PlatformAddress;");
     if (meth == NULL) {
-        LOGE("Unable to find DirectBuffer.getEffectiveAddress\n");
+        LOGE("Unable to find PlatformAddress.getEffectiveAddress\n");
         return false;
     }
     gDvm.methOrgApacheHarmonyNioInternalDirectBuffer_getEffectiveAddress = meth;
 
+    meth = dvmFindVirtualMethodByDescriptor(platformAddressClass,
+                "toLong", "()J");
+    if (meth == NULL) {
+        LOGE("Unable to find PlatformAddress.toLong\n");
+        return false;
+    }
+    gDvm.voffOrgApacheHarmonyLuniPlatformPlatformAddress_toLong =
+        meth->methodIndex;
+
+    meth = dvmFindDirectMethodByDescriptor(platformAddressFactoryClass,
+                "on",
+                "(I)Lorg/apache/harmony/luni/platform/PlatformAddress;");
+    if (meth == NULL) {
+        LOGE("Unable to find PlatformAddressFactory.on\n");
+        return false;
+    }
+    gDvm.methOrgApacheHarmonyLuniPlatformPlatformAddress_on = meth;
+
     meth = dvmFindDirectMethodByDescriptor(readWriteBufferClass,
                 "<init>",
-                "(II)V");
+                "(Lorg/apache/harmony/luni/platform/PlatformAddress;II)V");
     if (meth == NULL) {
         LOGE("Unable to find ReadWriteDirectByteBuffer.<init>\n");
         return false;
     }
     gDvm.methJavaNioReadWriteDirectByteBuffer_init = meth;
+
+    gDvm.offOrgApacheHarmonyLuniPlatformPlatformAddress_osaddr =
+        dvmFindFieldOffset(platformAddressClass, "osaddr", "I");
+    if (gDvm.offOrgApacheHarmonyLuniPlatformPlatformAddress_osaddr < 0) {
+        LOGE("Unable to find PlatformAddress.osaddr\n");
+        return false;
+    }
 
     gDvm.offJavaNioBuffer_capacity =
         dvmFindFieldOffset(bufferClass, "capacity", "I");
@@ -405,7 +438,6 @@ void dvmJniShutdown(void)
 {
 #ifdef USE_INDIRECT_REF
     dvmClearIndirectRefTable(&gDvm.jniGlobalRefTable);
-    dvmClearIndirectRefTable(&gDvm.jniWeakGlobalRefTable);
 #else
     dvmClearReferenceTable(&gDvm.jniGlobalRefTable);
 #endif
@@ -2401,15 +2433,17 @@ static jmethodID GetMethodID(JNIEnv* env, jclass jclazz, const char* name,
             meth = NULL;
         }
         if (meth == NULL) {
-            dvmThrowExceptionFmt("Ljava/lang/NoSuchMethodError;",
-                "no method with name='%s' signature='%s' in class %s",
-                name, sig, clazz->descriptor);
-        } else {
-            /*
-             * The method's class may not be the same as clazz, but if
-             * it isn't this must be a virtual method and the class must
-             * be a superclass (and, hence, already initialized).
-             */
+            LOGD("GetMethodID: method not found: %s.%s:%s\n",
+                clazz->descriptor, name, sig);
+            dvmThrowException("Ljava/lang/NoSuchMethodError;", name);
+        }
+
+        /*
+         * The method's class may not be the same as clazz, but if
+         * it isn't this must be a virtual method and the class must
+         * be a superclass (and, hence, already initialized).
+         */
+        if (meth != NULL) {
             assert(dvmIsClassInitialized(meth->clazz) ||
                    dvmIsClassInitializing(meth->clazz));
         }
@@ -2422,8 +2456,8 @@ static jmethodID GetMethodID(JNIEnv* env, jclass jclazz, const char* name,
 /*
  * Get a field ID (instance fields).
  */
-static jfieldID GetFieldID(JNIEnv* env, jclass jclazz, const char* name,
-    const char* sig)
+static jfieldID GetFieldID(JNIEnv* env, jclass jclazz,
+    const char* name, const char* sig)
 {
     JNI_ENTER();
 
@@ -2436,9 +2470,9 @@ static jfieldID GetFieldID(JNIEnv* env, jclass jclazz, const char* name,
     } else {
         id = (jfieldID) dvmFindInstanceFieldHier(clazz, name, sig);
         if (id == NULL) {
-            dvmThrowExceptionFmt("Ljava/lang/NoSuchFieldError;",
-                "no field with name='%s' signature='%s' in class %s",
-                name, sig, clazz->descriptor);
+            LOGD("GetFieldID: unable to find field %s.%s:%s\n",
+                clazz->descriptor, name, sig);
+            dvmThrowException("Ljava/lang/NoSuchFieldError;", name);
         }
     }
     JNI_EXIT();
@@ -2477,11 +2511,8 @@ static jmethodID GetStaticMethodID(JNIEnv* env, jclass jclazz,
         }
 
         id = (jmethodID) meth;
-        if (id == NULL) {
-            dvmThrowExceptionFmt("Ljava/lang/NoSuchMethodError;",
-                "no static method with name='%s' signature='%s' in class %s",
-                name, sig, clazz->descriptor);
-        }
+        if (id == NULL)
+            dvmThrowException("Ljava/lang/NoSuchMethodError;", name);
     }
 
     JNI_EXIT();
@@ -2504,11 +2535,8 @@ static jfieldID GetStaticFieldID(JNIEnv* env, jclass jclazz,
         id = NULL;
     } else {
         id = (jfieldID) dvmFindStaticField(clazz, name, sig);
-        if (id == NULL) {
-            dvmThrowExceptionFmt("Ljava/lang/NoSuchFieldError;",
-                "no static field with name='%s' signature='%s' in class %s",
-                name, sig, clazz->descriptor);
-        }
+        if (id == NULL)
+            dvmThrowException("Ljava/lang/NoSuchFieldError;", name);
     }
     JNI_EXIT();
     return id;
@@ -3516,19 +3544,37 @@ static jobject NewDirectByteBuffer(JNIEnv* env, void* address, jlong capacity)
     JNI_ENTER();
 
     Thread* self = _self /*dvmThreadSelf()*/;
+    Object* platformAddress = NULL;
     JValue callResult;
     jobject result = NULL;
-    ClassObject* bufferClazz = gDvm.classJavaNioReadWriteDirectByteBuffer;
+    ClassObject* tmpClazz;
+
+    tmpClazz = gDvm.methOrgApacheHarmonyLuniPlatformPlatformAddress_on->clazz;
+    if (!dvmIsClassInitialized(tmpClazz) && !dvmInitClass(tmpClazz))
+        goto bail;
+
+    /* get an instance of PlatformAddress that wraps the provided address */
+    dvmCallMethod(self,
+        gDvm.methOrgApacheHarmonyLuniPlatformPlatformAddress_on,
+        NULL, &callResult, address);
+    if (dvmGetException(self) != NULL || callResult.l == NULL)
+        goto bail;
+
+    /* don't let the GC discard it */
+    platformAddress = (Object*) callResult.l;
+    dvmAddTrackedAlloc(platformAddress, self);
+    LOGV("tracking %p for address=%p\n", platformAddress, address);
 
     /* create an instance of java.nio.ReadWriteDirectByteBuffer */
-    if (!dvmIsClassInitialized(bufferClazz) && !dvmInitClass(bufferClazz))
+    tmpClazz = gDvm.classJavaNioReadWriteDirectByteBuffer;
+    if (!dvmIsClassInitialized(tmpClazz) && !dvmInitClass(tmpClazz))
         goto bail;
-    Object* newObj = dvmAllocObject(bufferClazz, ALLOC_DONT_TRACK);
+    Object* newObj = dvmAllocObject(tmpClazz, ALLOC_DONT_TRACK);
     if (newObj != NULL) {
-        /* call the constructor */
+        /* call the (PlatformAddress, int, int) constructor */
         result = addLocalReference(env, newObj);
         dvmCallMethod(self, gDvm.methJavaNioReadWriteDirectByteBuffer_init,
-                newObj, &callResult, (jint) address, (jint) capacity);
+            newObj, &callResult, platformAddress, (jint) capacity, (jint) 0);
         if (dvmGetException(self) != NULL) {
             deleteLocalReference(env, result);
             result = NULL;
@@ -3537,6 +3583,8 @@ static jobject NewDirectByteBuffer(JNIEnv* env, void* address, jlong capacity)
     }
 
 bail:
+    if (platformAddress != NULL)
+        dvmReleaseTrackedAlloc(platformAddress, self);
     JNI_EXIT();
     return result;
 }
@@ -3579,9 +3627,10 @@ static void* GetDirectBufferAddress(JNIEnv* env, jobject jbuf)
     }
 
     /*
-     * Get the effective address by calling getEffectiveAddress.
+     * Get a PlatformAddress object with the effective address.
      *
-     * If this isn't a direct buffer, an exception will have been thrown.
+     * If this isn't a direct buffer, the result will be NULL and/or an
+     * exception will have been thrown.
      */
     JValue callResult;
     const Method* meth = dvmGetVirtualizedMethod(bufObj->clazz,
@@ -3589,13 +3638,22 @@ static void* GetDirectBufferAddress(JNIEnv* env, jobject jbuf)
     dvmCallMethodA(self, meth, bufObj, false, &callResult, NULL);
     if (dvmGetException(self) != NULL) {
         dvmClearException(self);
-        callResult.i = 0;
+        callResult.l = NULL;
     }
 
-    result = (void*)(uintptr_t) callResult.i;
-    if (result == NULL) {
+    Object* platformAddr = callResult.l;
+    if (platformAddr == NULL) {
         LOGV("Got request for address of non-direct buffer\n");
+        goto bail;
     }
+
+    /*
+     * Extract the address from the PlatformAddress object.  Instead of
+     * calling the toLong() method, just grab the field directly.  This
+     * is faster but more fragile.
+     */
+    result = (void*) dvmGetFieldInt(platformAddr,
+                gDvm.offOrgApacheHarmonyLuniPlatformPlatformAddress_osaddr);
 
     //LOGI("slow path for %p --> %p\n", buf, result);
 

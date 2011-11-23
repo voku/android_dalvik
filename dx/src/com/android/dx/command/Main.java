@@ -35,8 +35,7 @@ public class Main {
         "[--dump-width=<n>]\n" +
         "  [--dump-method=<name>[*]] [--verbose-dump] [--no-files] " +
         "[--core-library]\n" +
-        "  [--num-threads=<n>] [<file>.class | <file>.{zip,jar,apk} | " +
-        "<directory>] ...\n" +
+        "  [<file>.class | <file>.{zip,jar,apk} | <directory>] ...\n" +
         "    Convert a set of classfiles into a dex file, optionally " +
         "embedded in a\n" +
         "    jar/zip. Output name must end with one of: .dex .jar " +

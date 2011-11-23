@@ -25,7 +25,7 @@ static bool genArithOpFloat(CompilationUnit *cUnit, MIR *mir,
      * Don't attempt to optimize register usage since these opcodes call out to
      * the handlers.
      */
-    switch (mir->dalvikInsn.opcode) {
+    switch (mir->dalvikInsn.opCode) {
         case OP_ADD_FLOAT_2ADDR:
         case OP_ADD_FLOAT:
             op = kThumb2Vadds;
@@ -66,7 +66,7 @@ static bool genArithOpDouble(CompilationUnit *cUnit, MIR *mir,
     int op = kThumbBkpt;
     RegLocation rlResult;
 
-    switch (mir->dalvikInsn.opcode) {
+    switch (mir->dalvikInsn.opCode) {
         case OP_ADD_DOUBLE_2ADDR:
         case OP_ADD_DOUBLE:
             op = kThumb2Vaddd;
@@ -109,7 +109,7 @@ static bool genArithOpDouble(CompilationUnit *cUnit, MIR *mir,
 
 static bool genConversion(CompilationUnit *cUnit, MIR *mir)
 {
-    OpCode opcode = mir->dalvikInsn.opcode;
+    OpCode opCode = mir->dalvikInsn.opCode;
     int op = kThumbBkpt;
     bool longSrc = false;
     bool longDest = false;
@@ -118,7 +118,7 @@ static bool genConversion(CompilationUnit *cUnit, MIR *mir)
     RegLocation rlDest;
     RegLocation rlResult;
 
-    switch (opcode) {
+    switch (opCode) {
         case OP_INT_TO_FLOAT:
             longSrc = false;
             longDest = false;
@@ -215,7 +215,7 @@ static bool genCmpFP(CompilationUnit *cUnit, MIR *mir, RegLocation rlDest,
     bool ltNaNBias;
     RegLocation rlResult;
 
-    switch(mir->dalvikInsn.opcode) {
+    switch(mir->dalvikInsn.opCode) {
         case OP_CMPL_FLOAT:
             isDouble = false;
             defaultResult = -1;
@@ -253,16 +253,11 @@ static bool genCmpFP(CompilationUnit *cUnit, MIR *mir, RegLocation rlDest,
     }
     assert(!FPREG(rlResult.lowReg));
     newLIR0(cUnit, kThumb2Fmstat);
-
     genIT(cUnit, (defaultResult == -1) ? kArmCondGt : kArmCondMi, "");
     newLIR2(cUnit, kThumb2MovImmShift, rlResult.lowReg,
             modifiedImmediate(-defaultResult)); // Must not alter ccodes
-    genBarrier(cUnit);
-
     genIT(cUnit, kArmCondEq, "");
     loadConstant(cUnit, rlResult.lowReg, 0);
-    genBarrier(cUnit);
-
     storeValue(cUnit, rlDest, rlResult);
     return false;
 }

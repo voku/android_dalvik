@@ -997,24 +997,6 @@ static RegType primSigCharToRegType(char sigChar)
 }
 
 /*
- * See if the method matches the MethodType.
- */
-static bool isCorrectInvokeKind(MethodType methodType, Method* resMethod)
-{
-    switch (methodType) {
-    case METHOD_DIRECT:
-        return dvmIsDirectMethod(resMethod);
-    case METHOD_STATIC:
-        return dvmIsStaticMethod(resMethod);
-    case METHOD_VIRTUAL:
-    case METHOD_INTERFACE:
-        return !dvmIsDirectMethod(resMethod);
-    default:
-        return false;
-    }
-}
-
-/*
  * Verify the arguments to a method.  We're executing in "method", making
  * a call to the method reference in vB.
  *
@@ -1073,9 +1055,10 @@ static Method* verifyInvocationArgs(const Method* meth, const RegType* insnRegs,
             //char* curMethodDesc =
             //    dexProtoCopyMethodDescriptor(&meth->prototype);
 
-            LOGI("Could not find method %s.%s, referenced from method %s.%s\n",
-                dotMissingClass, methodName/*, methodDesc*/,
-                dotMethClass, meth->name/*, curMethodDesc*/);
+            LOGI("Could not find method %s.%s, referenced from "
+                 "method %s.%s\n",
+                 dotMissingClass, methodName/*, methodDesc*/,
+                 dotMethClass, meth->name/*, curMethodDesc*/);
 
             free(dotMissingClass);
             free(dotMethClass);
@@ -1102,16 +1085,6 @@ static Method* verifyInvocationArgs(const Method* meth, const RegType* insnRegs,
                     resMethod->clazz->descriptor, resMethod->name);
             goto bad_sig;
         }
-    }
-
-    /*
-     * See if the method type implied by the invoke instruction matches the
-     * access flags for the target method.
-     */
-    if (!isCorrectInvokeKind(methodType, resMethod)) {
-        LOG_VFY("VFY: invoke type does not match method type of %s.%s\n",
-            resMethod->clazz->descriptor, resMethod->name);
-        goto fail;
     }
 
     /*
@@ -2259,12 +2232,6 @@ static ClassObject* digForSuperclass(ClassObject* c1, ClassObject* c2)
  * If the dimensions don't match, we want to convert to an array of Object
  * with the least dimension, e.g. String[][] + String[][][][] = Object[][].
  *
- * Arrays of primitive types effectively have one less dimension when
- * merging.  int[] + float[] = Object, int[] + String[] = Object,
- * int[][] + float[][] = Object[], int[][] + String[] = Object[].  (The
- * only time this function doesn't return an array class is when one of
- * the arguments is a 1-dimensional primitive array.)
- *
  * This gets a little awkward because we may have to ask the VM to create
  * a new array type with the appropriate element and dimensions.  However, we
  * shouldn't be doing this often.
@@ -2273,56 +2240,28 @@ static ClassObject* findCommonArraySuperclass(ClassObject* c1, ClassObject* c2)
 {
     ClassObject* arrayClass = NULL;
     ClassObject* commonElem;
-    int arrayDim1, arrayDim2;
     int i, numDims;
-    bool hasPrimitive = false;
 
-    arrayDim1 = c1->arrayDim;
-    arrayDim2 = c2->arrayDim;
     assert(c1->arrayDim > 0);
     assert(c2->arrayDim > 0);
 
-    if (dvmIsPrimitiveClass(c1->elementClass)) {
-        arrayDim1--;
-        hasPrimitive = true;
-    }
-    if (dvmIsPrimitiveClass(c2->elementClass)) {
-        arrayDim2--;
-        hasPrimitive = true;
-    }
-
-    if (!hasPrimitive && arrayDim1 == arrayDim2) {
-        /*
-         * Two arrays of reference types with equal dimensions.  Try to
-         * find a good match.
-         */
+    if (c1->arrayDim == c2->arrayDim) {
+        //commonElem = digForSuperclass(c1->elementClass, c2->elementClass);
         commonElem = findCommonSuperclass(c1->elementClass, c2->elementClass);
-        numDims = arrayDim1;
+        numDims = c1->arrayDim;
     } else {
-        /*
-         * Mismatched array depths and/or array(s) of primitives.  We want
-         * Object, or an Object array with appropriate dimensions.
-         *
-         * We initialize arrayClass to Object here, because it's possible
-         * for us to set numDims=0.
-         */
-        if (arrayDim1 < arrayDim2)
-            numDims = arrayDim1;
+        if (c1->arrayDim < c2->arrayDim)
+            numDims = c1->arrayDim;
         else
-            numDims = arrayDim2;
-        arrayClass = commonElem = c1->super;     // == java.lang.Object
+            numDims = c2->arrayDim;
+        commonElem = c1->super;     // == java.lang.Object
     }
 
-    /*
-     * Find an appropriately-dimensioned array class.  This is easiest
-     * to do iteratively, using the array class found by the current round
-     * as the element type for the next round.
-     */
+    /* walk from the element to the (multi-)dimensioned array type */
     for (i = 0; i < numDims; i++) {
         arrayClass = dvmFindArrayClassForElement(commonElem);
         commonElem = arrayClass;
     }
-    assert(arrayClass != NULL);
 
     LOGVV("ArrayMerge '%s' + '%s' --> '%s'\n",
         c1->descriptor, c2->descriptor, arrayClass->descriptor);
@@ -2337,8 +2276,8 @@ static ClassObject* findCommonArraySuperclass(ClassObject* c1, ClassObject* c2)
  * depth" of each, move up toward the root of the deepest one until they're
  * at the same depth, then walk both up to the root until they match.
  *
- * If both classes are arrays, we need to merge based on array depth and
- * element type.
+ * If both classes are arrays of non-primitive types, we need to merge
+ * based on array depth and element type.
  *
  * If one class is an interface, we check to see if the other class/interface
  * (or one of its predecessors) implements the interface.  If so, we return
@@ -2379,7 +2318,10 @@ static ClassObject* findCommonSuperclass(ClassObject* c1, ClassObject* c2)
         return c2;
     }
 
-    if (dvmIsArrayClass(c1) && dvmIsArrayClass(c2)) {
+    if (dvmIsArrayClass(c1) && dvmIsArrayClass(c2) &&
+        !dvmIsPrimitiveClass(c1->elementClass) &&
+        !dvmIsPrimitiveClass(c2->elementClass))
+    {
         return findCommonArraySuperclass(c1, c2);
     }
 
@@ -3384,8 +3326,8 @@ static bool doCodeVerification(Method* meth, InsnFlags* insnFlags,
         {
             static const int gcMask = kInstrCanBranch | kInstrCanSwitch |
                                       kInstrCanThrow | kInstrCanReturn;
-            OpCode opcode = *(meth->insns + insnIdx) & 0xff;
-            int flags = dexGetInstrFlags(gDvm.instrFlags, opcode);
+            OpCode opCode = *(meth->insns + insnIdx) & 0xff;
+            int flags = dexGetInstrFlags(gDvm.instrFlags, opCode);
 
             /* 8, 16, 32, or 32*n -bit regs */
             int regWidth = (meth->registersSize + 7) / 8;
@@ -3545,7 +3487,7 @@ static bool verifyInstruction(Method* meth, InsnFlags* insnFlags,
 #endif
     dexDecodeInstruction(gDvm.instrFormat, insns, &decInsn);
 
-    int nextFlags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opcode);
+    int nextFlags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opCode);
 
     /*
      * Make a copy of the previous register state.  If the instruction
@@ -3564,7 +3506,7 @@ static bool verifyInstruction(Method* meth, InsnFlags* insnFlags,
 #endif
     }
 
-    switch (decInsn.opcode) {
+    switch (decInsn.opCode) {
     case OP_NOP:
         /*
          * A "pure" NOP has no effect on anything.  Data tables start with
@@ -3930,7 +3872,7 @@ static bool verifyInstruction(Method* meth, InsnFlags* insnFlags,
             LOG_VFY("VFY: filled-new-array on non-array class\n");
             failure = VERIFY_ERROR_GENERIC;
         } else {
-            bool isRange = (decInsn.opcode == OP_FILLED_NEW_ARRAY_RANGE);
+            bool isRange = (decInsn.opCode == OP_FILLED_NEW_ARRAY_RANGE);
 
             /* check the arguments to the instruction */
             verifyFilledNewArrayRegs(meth, workRegs, insnRegCount, &decInsn,
@@ -5020,10 +4962,10 @@ sput_1nr_common:
             bool isRange;
             bool isSuper;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_VIRTUAL_RANGE ||
-                        decInsn.opcode == OP_INVOKE_SUPER_RANGE);
-            isSuper =  (decInsn.opcode == OP_INVOKE_SUPER ||
-                        decInsn.opcode == OP_INVOKE_SUPER_RANGE);
+            isRange =  (decInsn.opCode == OP_INVOKE_VIRTUAL_RANGE ||
+                        decInsn.opCode == OP_INVOKE_SUPER_RANGE);
+            isSuper =  (decInsn.opCode == OP_INVOKE_SUPER ||
+                        decInsn.opCode == OP_INVOKE_SUPER_RANGE);
 
             calledMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_VIRTUAL, isRange,
@@ -5042,7 +4984,7 @@ sput_1nr_common:
             Method* calledMethod;
             bool isRange;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_DIRECT_RANGE);
+            isRange =  (decInsn.opCode == OP_INVOKE_DIRECT_RANGE);
             calledMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_DIRECT, isRange,
                             false, &failure);
@@ -5124,7 +5066,7 @@ sput_1nr_common:
             Method* calledMethod;
             bool isRange;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_STATIC_RANGE);
+            isRange =  (decInsn.opCode == OP_INVOKE_STATIC_RANGE);
             calledMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_STATIC, isRange,
                             false, &failure);
@@ -5143,7 +5085,7 @@ sput_1nr_common:
             Method* absMethod;
             bool isRange;
 
-            isRange =  (decInsn.opcode == OP_INVOKE_INTERFACE_RANGE);
+            isRange =  (decInsn.opCode == OP_INVOKE_INTERFACE_RANGE);
             absMethod = verifyInvocationArgs(meth, workRegs, insnRegCount,
                             &decInsn, uninitMap, METHOD_INTERFACE, isRange,
                             false, &failure);
@@ -5523,15 +5465,15 @@ sput_1nr_common:
         if (failure == VERIFY_ERROR_GENERIC || gDvm.optimizing) {
             /* immediate failure, reject class */
             LOG_VFY_METH(meth, "VFY:  rejecting opcode 0x%02x at 0x%04x\n",
-                decInsn.opcode, insnIdx);
+                decInsn.opCode, insnIdx);
             goto bail;
         } else {
             /* replace opcode and continue on */
             LOGD("VFY: replacing opcode 0x%02x at 0x%04x\n",
-                decInsn.opcode, insnIdx);
+                decInsn.opCode, insnIdx);
             if (!replaceFailingInstruction(meth, insnFlags, insnIdx, failure)) {
                 LOG_VFY_METH(meth, "VFY:  rejecting opcode 0x%02x at 0x%04x\n",
-                    decInsn.opcode, insnIdx);
+                    decInsn.opCode, insnIdx);
                 goto bail;
             }
             /* IMPORTANT: meth->insns may have been changed */

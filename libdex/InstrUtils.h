@@ -81,7 +81,7 @@ typedef struct DecodedInstruction {
     u8      vB_wide;        /* for kFmt51l */
     u4      vC;
     u4      arg[5];         /* vC/D/E/F/G in invoke or filled-new-array */
-    OpCode  opcode;
+    OpCode  opCode;
 } DecodedInstruction;
 
 /*
@@ -115,20 +115,20 @@ InstructionWidth* dexCreateInstrWidthTable(void);
  * Returns the width of the specified instruction, or 0 if not defined.
  * Optimized instructions use negative values.
  */
-DEX_INLINE int dexGetInstrWidth(const InstructionWidth* widths, OpCode opcode)
+DEX_INLINE int dexGetInstrWidth(const InstructionWidth* widths, OpCode opCode)
 {
-   // assert(/*opcode >= 0 &&*/ opcode < kNumDalvikInstructions);
-    return widths[opcode];
+   // assert(/*opCode >= 0 &&*/ opCode < kNumDalvikInstructions);
+    return widths[opCode];
 }
 
 /*
  * Return the width of the specified instruction, or 0 if not defined.
  */
-DEX_INLINE int dexGetInstrWidthAbs(const InstructionWidth* widths,OpCode opcode)
+DEX_INLINE int dexGetInstrWidthAbs(const InstructionWidth* widths,OpCode opCode)
 {
-    //assert(/*opcode >= 0 &&*/ opcode < kNumDalvikInstructions);
+    //assert(/*opCode >= 0 &&*/ opCode < kNumDalvikInstructions);
 
-    int val = dexGetInstrWidth(widths, opcode);
+    int val = dexGetInstrWidth(widths, opCode);
     if (val < 0)
         val = -val;
     /* XXX - the no-compare trick may be a cycle slower on ARM */
@@ -151,10 +151,10 @@ InstructionFlags* dexCreateInstrFlagsTable(void);
 /*
  * Returns the flags for the specified opcode.
  */
-DEX_INLINE int dexGetInstrFlags(const InstructionFlags* flags, OpCode opcode)
+DEX_INLINE int dexGetInstrFlags(const InstructionFlags* flags, OpCode opCode)
 {
-    //assert(/*opcode >= 0 &&*/ opcode < kNumDalvikInstructions);
-    return flags[opcode];
+    //assert(/*opCode >= 0 &&*/ opCode < kNumDalvikInstructions);
+    return flags[opCode];
 }
 
 
@@ -167,10 +167,10 @@ InstructionFormat* dexCreateInstrFormatTable(void);
  * Return the instruction format for the specified opcode.
  */
 DEX_INLINE InstructionFormat dexGetInstrFormat(const InstructionFormat* fmts,
-    OpCode opcode)
+    OpCode opCode)
 {
-    //assert(/*opcode >= 0 &&*/ opcode < kNumDalvikInstructions);
-    return fmts[opcode];
+    //assert(/*opCode >= 0 &&*/ opCode < kNumDalvikInstructions);
+    return fmts[opCode];
 }
 
 /*

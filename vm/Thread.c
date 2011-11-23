@@ -502,17 +502,6 @@ void dvmLockThreadList(Thread* self)
 }
 
 /*
- * Try to lock the thread list.
- *
- * Returns "true" if we locked it.  This is a "fast" mutex, so if the
- * current thread holds the lock this will fail.
- */
-bool dvmTryLockThreadList(void)
-{
-    return (dvmTryLockMutex(&gDvm.threadListLock) == 0);
-}
-
-/*
  * Release the thread list global lock.
  */
 void dvmUnlockThreadList(void)
@@ -663,7 +652,7 @@ void dvmSlayDaemons(void)
         }
 
         char* threadName = dvmGetThreadName(target);
-        LOGV("threadid=%d: suspending daemon id=%d name='%s'\n",
+        LOGD("threadid=%d: suspending daemon id=%d name='%s'\n",
             threadId, target->threadId, threadName);
         free(threadName);
 
@@ -724,7 +713,7 @@ void dvmSlayDaemons(void)
             }
 
             if (allSuspended) {
-                LOGV("threadid=%d: all daemons have suspended\n", threadId);
+                LOGD("threadid=%d: all daemons have suspended\n", threadId);
                 break;
             } else {
                 if (!complained) {
@@ -1375,15 +1364,13 @@ bool dvmCreateInterpThread(Object* threadObj, int reqStackSize)
                     gDvm.offJavaLangThread_name);
         char* threadName = dvmCreateCstrFromString(nameStr);
         bool profilerThread = strcmp(threadName, "SamplingProfiler") == 0;
+        free(threadName);
         if (!profilerThread) {
-            dvmThrowExceptionFmt("Ljava/lang/IllegalStateException;",
-                "No new threads in -Xzygote mode. "
-                "Found thread named '%s'", threadName);
+            dvmThrowException("Ljava/lang/IllegalStateException;",
+                "No new threads in -Xzygote mode");
 
-            free(threadName);
             goto fail;
         }
-        free(threadName);
     }
 
     self = dvmThreadSelf();
@@ -1652,8 +1639,7 @@ static void* interpThreadStart(void* arg)
 
     /*
      * Notify the debugger & DDM.  The debugger notification may cause
-     * us to suspend ourselves (and others).  The thread state may change
-     * to VMWAIT briefly if network packets are sent.
+     * us to suspend ourselves (and others).
      */
     if (gDvm.debuggerConnected)
         dvmDbgPostThreadStart(self);
@@ -2458,6 +2444,36 @@ void dvmSuspendSelf(bool jdwpActivity)
     unlockThreadSuspendCount();
 }
 
+
+#ifdef HAVE_GLIBC
+# define NUM_FRAMES  20
+# include <execinfo.h>
+/*
+ * glibc-only stack dump function.  Requires link with "--export-dynamic".
+ *
+ * TODO: move this into libs/cutils and make it work for all platforms.
+ */
+static void printBackTrace(void)
+{
+    void* array[NUM_FRAMES];
+    size_t size;
+    char** strings;
+    size_t i;
+
+    size = backtrace(array, NUM_FRAMES);
+    strings = backtrace_symbols(array, size);
+
+    LOGW("Obtained %zd stack frames.\n", size);
+
+    for (i = 0; i < size; i++)
+        LOGW("%s\n", strings[i]);
+
+    free(strings);
+}
+#else
+static void printBackTrace(void) {}
+#endif
+
 /*
  * Dump the state of the current thread and that of another thread that
  * we think is wedged.
@@ -2465,7 +2481,7 @@ void dvmSuspendSelf(bool jdwpActivity)
 static void dumpWedgedThread(Thread* thread)
 {
     dvmDumpThread(dvmThreadSelf(), false);
-    dvmPrintNativeBackTrace();
+    printBackTrace();
 
     // dumping a running thread is risky, but could be useful
     dvmDumpThread(thread, true);
@@ -3923,9 +3939,6 @@ static void gcScanInterpStackReferences(Thread *thread)
                             /* this is very bad */
                             LOGE("PGC: invalid ref in reg %d: 0x%08x\n",
                                 method->registersSize-1 - i, rval);
-                            LOGE("PGC: %s.%s addr 0x%04x\n",
-                                method->clazz->descriptor, method->name,
-                                saveArea->xtra.currentPc - method->insns);
                         } else
 #endif
                         {

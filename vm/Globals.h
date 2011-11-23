@@ -90,9 +90,6 @@ struct DvmGlobals {
     int         jdwpPort;
     bool        jdwpSuspend;
 
-    /* use wall clock as method profiler clock source? */
-    bool        profilerWallClock;
-
     /*
      * Lock profiling threshold value in milliseconds.  Acquires that
      * exceed threshold are logged.  Acquires within the threshold are
@@ -209,6 +206,7 @@ struct DvmGlobals {
     ClassObject* classOrgApacheHarmonyLangAnnotationAnnotationMember;
     ClassObject* classOrgApacheHarmonyLangAnnotationAnnotationMemberArray;
     ClassObject* classOrgApacheHarmonyNioInternalDirectBuffer;
+    jclass      jclassOrgApacheHarmonyNioInternalDirectBuffer;
 
     /* synthetic classes for arrays of primitives */
     ClassObject* classArrayBoolean;
@@ -308,9 +306,12 @@ struct DvmGlobals {
 
     /* assorted direct buffer helpers */
     Method*     methJavaNioReadWriteDirectByteBuffer_init;
+    Method*     methOrgApacheHarmonyLuniPlatformPlatformAddress_on;
     Method*     methOrgApacheHarmonyNioInternalDirectBuffer_getEffectiveAddress;
     int         offJavaNioBuffer_capacity;
     int         offJavaNioBuffer_effectiveDirectAddress;
+    int         offOrgApacheHarmonyLuniPlatformPlatformAddress_osaddr;
+    int         voffOrgApacheHarmonyLuniPlatformPlatformAddress_toLong;
 
     /*
      * VM-synthesized primitive classes, for arrays.

@@ -1337,27 +1337,23 @@ public final class BytecodeArray {
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitInvalid(int opcode, int offset, int length) {
             clear();
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitNoArgs(int opcode, int offset, int length,
                 Type type) {
             clear();
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitLocal(int opcode, int offset, int length,
                 int idx, Type type, int value) {
             clear();
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitConstant(int opcode, int offset, int length,
                 Constant cst, int value) {
             this.cst = cst;
@@ -1366,34 +1362,29 @@ public final class BytecodeArray {
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitBranch(int opcode, int offset, int length,
                 int target) {
             clear();
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitSwitch(int opcode, int offset, int length,
                 SwitchList cases, int padding) {
             clear();
         }
 
         /** {@inheritDoc} */
-        @Override
         public void visitNewarray(int offset, int length, CstType type,
                 ArrayList<Constant> initVals) {
             clear();
         }
 
         /** {@inheritDoc} */
-        @Override
         public void setPreviousOffset(int offset) {
             // Intentionally left empty
         }
 
         /** {@inheritDoc} */
-        @Override
         public int getPreviousOffset() {
             // Intentionally left empty
             return -1;

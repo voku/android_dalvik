@@ -193,7 +193,7 @@ static ArmLIR *genExportPC(CompilationUnit *cUnit, MIR *mir)
 static void genMonitorEnter(CompilationUnit *cUnit, MIR *mir)
 {
     RegLocation rlSrc = dvmCompilerGetSrc(cUnit, mir, 0);
-    bool enter = (mir->dalvikInsn.opcode == OP_MONITOR_ENTER);
+    bool enter = (mir->dalvikInsn.opCode == OP_MONITOR_ENTER);
     ArmLIR *target;
     ArmLIR *hopTarget;
     ArmLIR *branch;
@@ -215,7 +215,6 @@ static void genMonitorEnter(CompilationUnit *cUnit, MIR *mir)
             LW_LOCK_OWNER_SHIFT - 1);
     hopBranch = newLIR2(cUnit, kThumb2Cbnz, r2, 0);
     newLIR4(cUnit, kThumb2Strex, r2, r3, r1, offsetof(Object, lock) >> 2);
-    dvmCompilerGenMemBarrier(cUnit);
     branch = newLIR2(cUnit, kThumb2Cbz, r2, 0);
 
     hopTarget = newLIR0(cUnit, kArmPseudoTargetLabel);
@@ -275,7 +274,6 @@ static void genMonitorExit(CompilationUnit *cUnit, MIR *mir)
             LW_LOCK_OWNER_SHIFT - 1);
     opRegReg(cUnit, kOpSub, r2, r3);
     hopBranch = opCondBranch(cUnit, kArmCondNe);
-    dvmCompilerGenMemBarrier(cUnit);
     storeWordDisp(cUnit, r1, offsetof(Object, lock), r7);
     branch = opNone(cUnit, kOpUncondBr);
 
@@ -308,7 +306,7 @@ static void genMonitorExit(CompilationUnit *cUnit, MIR *mir)
 
 static void genMonitor(CompilationUnit *cUnit, MIR *mir)
 {
-    if (mir->dalvikInsn.opcode == OP_MONITOR_ENTER)
+    if (mir->dalvikInsn.opCode == OP_MONITOR_ENTER)
         genMonitorEnter(cUnit, mir);
     else
         genMonitorExit(cUnit, mir);

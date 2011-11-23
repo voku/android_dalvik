@@ -235,7 +235,7 @@ static void selfVerificationDumpTrace(const u2* pc, Thread* self)
         offset =  (int)((u2*)addr - stackSave->method->insns);
         decInsn = &(shadowSpace->trace[i].decInsn);
         /* Not properly decoding instruction, some registers may be garbage */
-        LOGD("0x%x: (0x%04x) %s", addr, offset, getOpcodeName(decInsn->opcode));
+        LOGD("0x%x: (0x%04x) %s", addr, offset, getOpcodeName(decInsn->opCode));
     }
 }
 
@@ -267,7 +267,7 @@ static bool selfVerificationDebugInterp(const u2* pc, Thread* self,
 
     //LOGD("### DbgIntp(%d): PC: 0x%x endPC: 0x%x state: %d len: %d %s",
     //    self->threadId, (int)pc, (int)shadowSpace->endPC, state,
-    //    shadowSpace->traceLength, getOpcodeName(decInsn.opcode));
+    //    shadowSpace->traceLength, getOpcodeName(decInsn.opCode));
 
     if (state == kSVSIdle || state == kSVSStart) {
         LOGD("~~~ DbgIntrp: INCORRECT PREVIOUS STATE(%d): %d",
@@ -642,17 +642,17 @@ int dvmCheckJit(const u2* pc, Thread* self, InterpState* interpState)
              * cells.
              */
             if (interpState->totalTraceLen != 0 &&
-                (decInsn.opcode == OP_PACKED_SWITCH ||
-                 decInsn.opcode == OP_SPARSE_SWITCH)) {
+                (decInsn.opCode == OP_PACKED_SWITCH ||
+                 decInsn.opCode == OP_SPARSE_SWITCH)) {
                 interpState->jitState = kJitTSelectEnd;
                 break;
             }
 
 
 #if defined(SHOW_TRACE)
-            LOGD("TraceGen: adding %s",getOpcodeName(decInsn.opcode));
+            LOGD("TraceGen: adding %s",getOpcodeName(decInsn.opCode));
 #endif
-            flags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opcode);
+            flags = dexGetInstrFlags(gDvm.instrFlags, decInsn.opCode);
             len = dexGetInstrOrTableWidthAbs(gDvm.instrWidth, lastPC);
             offset = lastPC - interpState->method->insns;
             assert((unsigned) offset <
@@ -679,7 +679,7 @@ int dvmCheckJit(const u2* pc, Thread* self, InterpState* interpState)
 
             if (  ((flags & kInstrUnconditional) == 0) &&
                   /* don't end trace on INVOKE_DIRECT_EMPTY  */
-                  (decInsn.opcode != OP_INVOKE_DIRECT_EMPTY) &&
+                  (decInsn.opCode != OP_INVOKE_DIRECT_EMPTY) &&
                   ((flags & (kInstrCanBranch |
                              kInstrCanSwitch |
                              kInstrCanReturn |
@@ -687,11 +687,11 @@ int dvmCheckJit(const u2* pc, Thread* self, InterpState* interpState)
                     interpState->jitState = kJitTSelectEnd;
 #if defined(SHOW_TRACE)
             LOGD("TraceGen: ending on %s, basic block end",
-                 getOpcodeName(decInsn.opcode));
+                 getOpcodeName(decInsn.opCode));
 #endif
             }
             /* Break on throw or self-loop */
-            if ((decInsn.opcode == OP_THROW) || (lastPC == pc)){
+            if ((decInsn.opCode == OP_THROW) || (lastPC == pc)){
                 interpState->jitState = kJitTSelectEnd;
             }
             if (interpState->totalTraceLen >= JIT_MAX_TRACE_LEN) {

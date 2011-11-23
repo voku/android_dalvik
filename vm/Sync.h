@@ -68,6 +68,8 @@ struct Monitor;
 struct Thread;
 typedef struct Monitor Monitor;
 
+#define QUIET_ZYGOTE_MONITOR 1
+
 /*
  * Initialize a Lock to the proper starting value.
  * This is necessary for thin locking.

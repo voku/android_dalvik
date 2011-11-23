@@ -123,16 +123,14 @@ public final class CstType extends TypedConstant {
      * @return {@code non-null;} an appropriately-constructed instance
      */
     public static CstType intern(Type type) {
-        synchronized (interns) {
-            CstType cst = interns.get(type);
+        CstType cst = interns.get(type);
 
-            if (cst == null) {
-                cst = new CstType(type);
-                interns.put(type, cst);
-            }
-
-            return cst;
+        if (cst == null) {
+            cst = new CstType(type);
+            interns.put(type, cst);
         }
+
+        return cst;
     }
 
     /**

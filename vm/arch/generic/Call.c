@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 /*
  * This uses the FFI (Foreign Function Interface) library to abstract away
  * the system-dependent stuff.  The FFI code is slower than a custom
@@ -31,12 +30,12 @@
 static ffi_type* getFfiType(char sigType)
 {
     switch (sigType) {
-    case 'V': return &ffi_type_void;
     case 'Z': return &ffi_type_uint8;
     case 'B': return &ffi_type_sint8;
     case 'C': return &ffi_type_uint16;
     case 'S': return &ffi_type_sint16;
     case 'I': return &ffi_type_sint32;
+    case 'V': return &ffi_type_void;
     case 'F': return &ffi_type_float;
     case 'J': return &ffi_type_sint64;
     case 'D': return &ffi_type_double;
@@ -74,6 +73,7 @@ void dvmPlatformInvoke(void* pEnv, ClassObject* clazz, int argInfo, int argc,
     ffi_type* types[kMaxArgs];
     void* values[kMaxArgs];
     ffi_type* retType;
+    const char* sig;
     char sigByte;
     int srcArg, dstArg;
 

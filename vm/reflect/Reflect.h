@@ -37,11 +37,6 @@ bool dvmValidateBoxClasses();
 ArrayObject* dvmGetDeclaredFields(ClassObject* clazz, bool publicOnly);
 
 /*
- * Get the named field.
- */
-Object* dvmGetDeclaredField(ClassObject* clazz, StringObject* nameObj);
-
-/*
  * Get all constructors declared by a class.
  */
 ArrayObject* dvmGetDeclaredConstructors(ClassObject* clazz, bool publicOnly);
@@ -54,12 +49,6 @@ ArrayObject* dvmGetDeclaredConstructors(ClassObject* clazz, bool publicOnly);
  * since those weren't declared in the class, or constructors.
  */
 ArrayObject* dvmGetDeclaredMethods(ClassObject* clazz, bool publicOnly);
-
-/*
- * Get the named method.
- */
-Object* dvmGetDeclaredConstructorOrMethod(ClassObject* clazz,
-    StringObject* nameObj, ArrayObject* args);
 
 /*
  * Get all interfaces a class implements. If this is unable to allocate

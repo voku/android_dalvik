@@ -1254,30 +1254,21 @@ static void logStackTraceOf(Object* exception)
     StringObject* messageStr;
     int stackSize;
     const int* intVals;
-    char* className;
 
-    className = dvmDescriptorToDot(exception->clazz->descriptor);
     messageStr = (StringObject*) dvmGetFieldObject(exception,
                     gDvm.offJavaLangThrowable_message);
     if (messageStr != NULL) {
         char* cp = dvmCreateCstrFromString(messageStr);
-        LOGI("%s: %s\n", className, cp);
+        LOGI("%s: %s\n", exception->clazz->descriptor, cp);
         free(cp);
     } else {
-        LOGI("%s:\n", className);
+        LOGI("%s:\n", exception->clazz->descriptor);
     }
-    free(className);
 
-    /*
-     * This relies on the stackState field, which contains the "raw"
-     * form of the stack.  The Throwable class may clear this field
-     * after it generates the "cooked" form, in which case we'll have
-     * nothing to show.
-     */
     stackData = (const ArrayObject*) dvmGetFieldObject(exception,
                     gDvm.offJavaLangThrowable_stackState);
     if (stackData == NULL) {
-        LOGI("  (raw stack trace not found)\n");
+        LOGI("  (no stack trace data found)\n");
         return;
     }
 

@@ -45,6 +45,14 @@ ArrayObject* dvmAllocArray(ClassObject* arrayClass, size_t length,
     size_t size;
 
     assert(arrayClass->descriptor[0] == '[');
+
+    if (length > 0x0fffffff) {
+        /* too large and (length * elemWidth) will overflow 32 bits */
+        LOGE("Rejecting allocation of %u-element array\n", length);
+        dvmThrowBadAllocException("array size too large");
+        return NULL;
+    }
+
     size = offsetof(ArrayObject, contents);
     size += length * elemWidth;
 
@@ -503,9 +511,9 @@ static ClassObject* createArrayClass(const char* descriptor, Object* loader)
          * Another thread must have loaded the class after we
          * started but before we finished.  Discard what we've
          * done and leave some hints for the GC.
-         *
-         * (Yes, this happens.)
          */
+        LOGI("WOW: somebody generated %s simultaneously\n",
+            newClass->descriptor);
 
         /* Clean up the class before letting the
          * GC get its hands on it.

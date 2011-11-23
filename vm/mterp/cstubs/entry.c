@@ -30,8 +30,9 @@ bool dvmMterpStdRun(MterpGlue* glue)
      */
     changeInterp = setjmp(jmpBuf) -1;
     if (changeInterp >= 0) {
+        Thread* threadSelf = dvmThreadSelf();
         LOGVV("mterp threadid=%d returning %d\n",
-            dvmThreadSelf()->threadId, changeInterp);
+            threadSelf->threadId, changeInterp);
         return changeInterp;
     }
 
@@ -63,7 +64,6 @@ bool dvmMterpStdRun(MterpGlue* glue)
 
         u2 inst = /*glue->*/pc[0];
         Handler handler = (Handler) gDvmMterpHandlers[inst & 0xff];
-        (void) gDvmMterpHandlerNames;   /* avoid gcc "defined but not used" */
         LOGVV("handler %p %s\n",
             handler, (const char*) gDvmMterpHandlerNames[inst & 0xff]);
         (*handler)(glue);

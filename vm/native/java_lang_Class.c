@@ -240,6 +240,7 @@ static void Dalvik_java_lang_Class_getDeclaredConstructors(const u4* args,
 
 /*
  * static Field[] getDeclaredFields(Class klass, boolean publicOnly)
+ *     throws SecurityException
  */
 static void Dalvik_java_lang_Class_getDeclaredFields(const u4* args,
     JValue* pResult)
@@ -252,19 +253,6 @@ static void Dalvik_java_lang_Class_getDeclaredFields(const u4* args,
     dvmReleaseTrackedAlloc((Object*) fields, NULL);
 
     RETURN_PTR(fields);
-}
-
-/*
- * static Field getDeclaredField(Class klass, String name)
- */
-static void Dalvik_java_lang_Class_getDeclaredField(const u4* args,
-    JValue* pResult)
-{
-    ClassObject* clazz = (ClassObject*) args[0];
-    StringObject* nameObj = (StringObject*) args[1];
-    Object* fieldObj = dvmGetDeclaredField(clazz, nameObj);
-    dvmReleaseTrackedAlloc((Object*) fieldObj, NULL);
-    RETURN_PTR(fieldObj);
 }
 
 /*
@@ -282,25 +270,6 @@ static void Dalvik_java_lang_Class_getDeclaredMethods(const u4* args,
     dvmReleaseTrackedAlloc((Object*) methods, NULL);
 
     RETURN_PTR(methods);
-}
-
-/*
- * static native Member getDeclaredConstructorOrMethod(
- *     Class clazz, String name, Class[] args);
- */
-static void Dalvik_java_lang_Class_getDeclaredConstructorOrMethod(
-    const u4* args, JValue* pResult)
-{
-    ClassObject* clazz = (ClassObject*) args[0];
-    StringObject* nameObj = (StringObject*) args[1];
-    ArrayObject* methodArgs = (ArrayObject*) args[2];
-
-    Object* methodObj;
-
-    methodObj = dvmGetDeclaredConstructorOrMethod(clazz, nameObj, methodArgs);
-    dvmReleaseTrackedAlloc(methodObj, NULL);
-
-    RETURN_PTR(methodObj);
 }
 
 /*
@@ -797,10 +766,6 @@ const DalvikNativeMethod dvm_java_lang_Class[] = {
         Dalvik_java_lang_Class_getDeclaredFields },
     { "getDeclaredMethods",     "(Ljava/lang/Class;Z)[Ljava/lang/reflect/Method;",
         Dalvik_java_lang_Class_getDeclaredMethods },
-    { "getDeclaredField",      "(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/reflect/Field;",
-        Dalvik_java_lang_Class_getDeclaredField },
-    { "getDeclaredConstructorOrMethod", "(Ljava/lang/Class;Ljava/lang/String;[Ljava/lang/Class;)Ljava/lang/reflect/Member;",
-        Dalvik_java_lang_Class_getDeclaredConstructorOrMethod },
     { "getInterfaces",          "()[Ljava/lang/Class;",
         Dalvik_java_lang_Class_getInterfaces },
     { "getModifiers",           "(Ljava/lang/Class;Z)I",

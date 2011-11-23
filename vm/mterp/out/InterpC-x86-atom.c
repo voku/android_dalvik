@@ -60,30 +60,23 @@
 #endif
 
 /*
- * Some architectures require 64-bit alignment for access to 64-bit data
- * types.  We can't just use pointers to copy 64-bit values out of our
- * interpreted register set, because gcc may assume the pointer target is
- * aligned and generate invalid code.
+ * ARM EABI requires 64-bit alignment for access to 64-bit data types.  We
+ * can't just use pointers to copy 64-bit values out of our interpreted
+ * register set, because gcc will generate ldrd/strd.
  *
- * There are two common approaches:
- *  (1) Use a union that defines a 32-bit pair and a 64-bit value.
- *  (2) Call memcpy().
- *
- * Depending upon what compiler you're using and what options are specified,
- * one may be faster than the other.  For example, the compiler might
- * convert a memcpy() of 8 bytes into a series of instructions and omit
- * the call.  The union version could cause some strange side-effects,
- * e.g. for a while ARM gcc thought it needed separate storage for each
- * inlined instance, and generated instructions to zero out ~700 bytes of
- * stack space at the top of the interpreter.
- *
- * The default is to use memcpy().  The current gcc for ARM seems to do
- * better with the union.
+ * The __UNION version copies data in and out of a union.  The __MEMCPY
+ * version uses a memcpy() call to do the transfer; gcc is smart enough to
+ * not actually call memcpy().  The __UNION version is very bad on ARM;
+ * it only uses one more instruction than __MEMCPY, but for some reason
+ * gcc thinks it needs separate storage for every instance of the union.
+ * On top of that, it feels the need to zero them out at the start of the
+ * method.  Net result is we zero out ~700 bytes of stack space at the top
+ * of the interpreter using ARM STM instructions.
  */
 #if defined(__ARM_EABI__)
-# define NO_UNALIGN_64__UNION
+//# define NO_UNALIGN_64__UNION
+# define NO_UNALIGN_64__MEMCPY
 #endif
-
 
 //#define LOG_INSTR                   /* verbose debugging */
 /* set and adjust ANDROID_LOG_TAGS='*:i jdwp:i dalvikvm:i dalvikvmi:i' */
@@ -180,10 +173,12 @@ static inline s8 getLongFromArray(const u4* ptr, int idx)
     conv.parts[0] = ptr[0];
     conv.parts[1] = ptr[1];
     return conv.ll;
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     s8 val;
     memcpy(&val, &ptr[idx], 8);
     return val;
+#else
+    return *((s8*) &ptr[idx]);
 #endif
 }
 
@@ -197,8 +192,10 @@ static inline void putLongToArray(u4* ptr, int idx, s8 val)
     conv.ll = val;
     ptr[0] = conv.parts[0];
     ptr[1] = conv.parts[1];
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     memcpy(&ptr[idx], &val, 8);
+#else
+    *((s8*) &ptr[idx]) = val;
 #endif
 }
 
@@ -212,10 +209,12 @@ static inline double getDoubleFromArray(const u4* ptr, int idx)
     conv.parts[0] = ptr[0];
     conv.parts[1] = ptr[1];
     return conv.d;
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     double dval;
     memcpy(&dval, &ptr[idx], 8);
     return dval;
+#else
+    return *((double*) &ptr[idx]);
 #endif
 }
 
@@ -229,8 +228,10 @@ static inline void putDoubleToArray(u4* ptr, int idx, double dval)
     conv.d = dval;
     ptr[0] = conv.parts[0];
     ptr[1] = conv.parts[1];
-#else
+#elif defined(NO_UNALIGN_64__MEMCPY)
     memcpy(&ptr[idx], &dval, 8);
+#else
+    *((double*) &ptr[idx]) = dval;
 #endif
 }
 
@@ -1190,6 +1191,82 @@ GOTO_TARGET_DECL(exceptionThrown);
     }                                                                       \
     FINISH(2);
 
+
+/* File: c/OP_BREAKPOINT.c */
+HANDLE_OPCODE(OP_BREAKPOINT)
+#if (INTERP_TYPE == INTERP_DBG) && defined(WITH_DEBUGGER)
+    {
+        /*
+         * Restart this instruction with the original opcode.  We do
+         * this by simply jumping to the handler.
+         *
+         * It's probably not necessary to update "inst", but we do it
+         * for the sake of anything that needs to do disambiguation in a
+         * common handler with INST_INST.
+         *
+         * The breakpoint itself is handled over in updateDebugger(),
+         * because we need to detect other events (method entry, single
+         * step) and report them in the same event packet, and we're not
+         * yet handling those through breakpoint instructions.  By the
+         * time we get here, the breakpoint has already been handled and
+         * the thread resumed.
+         */
+        u1 originalOpCode = dvmGetOriginalOpCode(pc);
+        LOGV("+++ break 0x%02x (0x%04x -> 0x%04x)\n", originalOpCode, inst,
+            INST_REPLACE_OP(inst, originalOpCode));
+        inst = INST_REPLACE_OP(inst, originalOpCode);
+        FINISH_BKPT(originalOpCode);
+    }
+#else
+    LOGE("Breakpoint hit in non-debug interpreter\n");
+    dvmAbort();
+#endif
+OP_END
+
+/* File: c/OP_EXECUTE_INLINE_RANGE.c */
+HANDLE_OPCODE(OP_EXECUTE_INLINE_RANGE /*{vCCCC..v(CCCC+AA-1)}, inline@BBBB*/)
+    {
+        u4 arg0, arg1, arg2, arg3;
+        arg0 = arg1 = arg2 = arg3 = 0;      /* placate gcc */
+
+        EXPORT_PC();
+
+        vsrc1 = INST_AA(inst);      /* #of args */
+        ref = FETCH(1);             /* inline call "ref" */
+        vdst = FETCH(2);            /* range base */
+        ILOGV("|execute-inline-range args=%d @%d {regs=v%d-v%d}",
+            vsrc1, ref, vdst, vdst+vsrc1-1);
+
+        assert((vdst >> 16) == 0);  // 16-bit type -or- high 16 bits clear
+        assert(vsrc1 <= 4);
+
+        switch (vsrc1) {
+        case 4:
+            arg3 = GET_REGISTER(vdst+3);
+            /* fall through */
+        case 3:
+            arg2 = GET_REGISTER(vdst+2);
+            /* fall through */
+        case 2:
+            arg1 = GET_REGISTER(vdst+1);
+            /* fall through */
+        case 1:
+            arg0 = GET_REGISTER(vdst+0);
+            /* fall through */
+        default:        // case 0
+            ;
+        }
+
+#if INTERP_TYPE == INTERP_DBG
+        if (!dvmPerformInlineOp4Dbg(arg0, arg1, arg2, arg3, &retval, ref))
+            GOTO_exceptionThrown();
+#else
+        if (!dvmPerformInlineOp4Std(arg0, arg1, arg2, arg3, &retval, ref))
+            GOTO_exceptionThrown();
+#endif
+    }
+    FINISH(3);
+OP_END
 
 /* File: c/gotoTargets.c */
 /*

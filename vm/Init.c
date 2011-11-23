@@ -43,8 +43,8 @@ extern int jniRegisterSystemMethods(JNIEnv* env);
 
 /* fwd */
 static bool registerSystemNatives(JNIEnv* pEnv);
-static bool initJdwp(void);
-static bool initZygote(void);
+static bool dvmInitJDWP(void);
+static bool dvmInitZygote(void);
 
 
 /* global state */
@@ -60,7 +60,7 @@ struct DvmJitGlobals gDvmJit;
  *
  * We follow the tradition of unhyphenated compound words.
  */
-static void usage(const char* progName)
+static void dvmUsage(const char* progName)
 {
     dvmFprintf(stderr, "%s: [options] class [argument ...]\n", progName);
     dvmFprintf(stderr, "%s: [options] -jar file.jar [argument ...]\n",progName);
@@ -244,16 +244,16 @@ static void showVersion(void)
  * Returns 0 (a useless size) if "s" is malformed or specifies a low or
  * non-evenly-divisible value.
  */
-static size_t parseMemOption(const char *s, size_t div)
+static unsigned int dvmParseMemOption(const char *s, unsigned int div)
 {
     /* strtoul accepts a leading [+-], which we don't want,
      * so make sure our string starts with a decimal digit.
      */
     if (isdigit(*s)) {
         const char *s2;
-        size_t val;
+        unsigned int val;
 
-        val = strtoul(s, (char **)&s2, 10);
+        val = (unsigned int)strtoul(s, (char **)&s2, 10);
         if (s2 != s) {
             /* s2 should be pointing just after the number.
              * If this is the end of the string, the user
@@ -270,7 +270,7 @@ static size_t parseMemOption(const char *s, size_t div)
                  */
                 c = *s2++;
                 if (*s2 == '\0') {
-                    size_t mul;
+                    unsigned int mul;
 
                     if (c == '\0') {
                         mul = 1;
@@ -286,12 +286,12 @@ static size_t parseMemOption(const char *s, size_t div)
                         return 0;
                     }
 
-                    if (val <= SIZE_MAX / mul) {
+                    if (val <= UINT_MAX / mul) {
                         val *= mul;
                     } else {
                         /* Clamp to a multiple of 1024.
                          */
-                        val = SIZE_MAX & ~(1024-1);
+                        val = UINT_MAX & ~(1024-1);
                     }
                 } else {
                     /* There's more than one character after the
@@ -665,7 +665,7 @@ static void processXjitmethod(const char *opt)
  * Returns 0 on success, -1 on failure, and 1 for the special case of
  * "-version" where we want to stop without showing an error message.
  */
-static int processOptions(int argc, const char* const argv[],
+static int dvmProcessOptions(int argc, const char* const argv[],
     bool ignoreUnrecognized)
 {
     int i;
@@ -769,7 +769,7 @@ static int processOptions(int argc, const char* const argv[],
             assert(false);
 
         } else if (strncmp(argv[i], "-Xms", 4) == 0) {
-            size_t val = parseMemOption(argv[i]+4, 1024);
+            unsigned int val = dvmParseMemOption(argv[i]+4, 1024);
             if (val != 0) {
                 if (val >= kMinHeapStartSize && val <= kMaxHeapSize) {
                     gDvm.heapSizeStart = val;
@@ -784,7 +784,7 @@ static int processOptions(int argc, const char* const argv[],
                 return -1;
             }
         } else if (strncmp(argv[i], "-Xmx", 4) == 0) {
-            size_t val = parseMemOption(argv[i]+4, 1024);
+            unsigned int val = dvmParseMemOption(argv[i]+4, 1024);
             if (val != 0) {
                 if (val >= kMinHeapSize && val <= kMaxHeapSize) {
                     gDvm.heapSizeMax = val;
@@ -799,7 +799,7 @@ static int processOptions(int argc, const char* const argv[],
                 return -1;
             }
         } else if (strncmp(argv[i], "-Xss", 4) == 0) {
-            size_t val = parseMemOption(argv[i]+4, 1);
+            unsigned int val = dvmParseMemOption(argv[i]+4, 1);
             if (val != 0) {
                 if (val >= kMinStackSize && val <= kMaxStackSize) {
                     gDvm.stackSize = val;
@@ -1001,9 +1001,6 @@ static int processOptions(int argc, const char* const argv[],
         } else if (strcmp(argv[i], "-Xcheckdexsum") == 0) {
             gDvm.verifyDexChecksum = true;
 
-        } else if (strcmp(argv[i], "-Xprofile:wallclock") == 0) {
-            gDvm.profilerWallClock = true;
-
         } else {
             if (!ignoreUnrecognized) {
                 dvmFprintf(stderr, "Unrecognized option '%s'\n", argv[i]);
@@ -1012,14 +1009,8 @@ static int processOptions(int argc, const char* const argv[],
         }
     }
 
-    /* External allocations count against the space we "reserve" by setting
-     * the heap max size greater than the heap start size. Without a gap,
-     * no external allocations will succeed. You won't get very far like that,
-     * so let's not even try.
-     */
-    if (gDvm.heapSizeStart >= gDvm.heapSizeMax) {
-        dvmFprintf(stderr, "External allocations require a gap between the "
-            "heap start size and max size\n");
+    if (gDvm.heapSizeStart > gDvm.heapSizeMax) {
+        dvmFprintf(stderr, "Heap start size must be <= heap max size\n");
         return -1;
     }
 
@@ -1154,11 +1145,11 @@ int dvmStartup(int argc, const char* const argv[], bool ignoreUnrecognized,
     /*
      * Process the option flags (if any).
      */
-    cc = processOptions(argc, argv, ignoreUnrecognized);
+    cc = dvmProcessOptions(argc, argv, ignoreUnrecognized);
     if (cc != 0) {
         if (cc < 0) {
             dvmFprintf(stderr, "\n");
-            usage("dalvikvm");
+            dvmUsage("dalvikvm");
         }
         goto fail;
     }
@@ -1311,7 +1302,7 @@ int dvmStartup(int argc, const char* const argv[], bool ignoreUnrecognized,
      * is that we don't start any additional threads in Zygote mode.
      */
     if (gDvm.zygote) {
-        if (!initZygote())
+        if (!dvmInitZygote())
             goto fail;
     } else {
         if (!dvmInitAfterZygote())
@@ -1373,7 +1364,7 @@ static bool registerSystemNatives(JNIEnv* pEnv)
 /*
  * Do zygote-mode-only initialization.
  */
-static bool initZygote(void)
+static bool dvmInitZygote(void)
 {
     /* zygote goes into its own process group */
     setpgid(0,0);
@@ -1422,7 +1413,7 @@ bool dvmInitAfterZygote(void)
      * "suspend=y", this will pause the VM.  We probably want this to
      * come last.
      */
-    if (!initJdwp()) {
+    if (!dvmInitJDWP()) {
         LOGD("JDWP init failed; continuing anyway\n");
     }
 
@@ -1461,7 +1452,7 @@ bool dvmInitAfterZygote(void)
  *
  * This gets more complicated with a nonzero value for "timeout".
  */
-static bool initJdwp(void)
+static bool dvmInitJDWP(void)
 {
     assert(!gDvm.zygote);
 
@@ -1700,41 +1691,6 @@ int dvmFprintf(FILE* fp, const char* format, ...)
     return result;
 }
 
-#ifdef __GLIBC__
-#include <execinfo.h>
-/*
- * glibc-only stack dump function.  Requires link with "--export-dynamic".
- *
- * TODO: move this into libs/cutils and make it work for all platforms.
- */
-void dvmPrintNativeBackTrace(void)
-{
-    size_t MAX_STACK_FRAMES = 64;
-    void* stackFrames[MAX_STACK_FRAMES];
-    size_t frameCount = backtrace(stackFrames, MAX_STACK_FRAMES);
-
-    /*
-     * TODO: in practice, we may find that we should use backtrace_symbols_fd
-     * to avoid allocation, rather than use our own custom formatting.
-     */
-    char** strings = backtrace_symbols(stackFrames, frameCount);
-    if (strings == NULL) {
-        LOGE("backtrace_symbols failed: %s", strerror(errno));
-        return;
-    }
-
-    size_t i;
-    for (i = 0; i < frameCount; ++i) {
-        LOGW("#%-2d %s", i, strings[i]);
-    }
-    free(strings);
-}
-#else
-void dvmPrintNativeBackTrace(void) {
-    /* Hopefully, you're on an Android device and debuggerd will do this. */
-}
-#endif
-
 /*
  * Abort the VM.  We get here on fatal errors.  Try very hard not to use
  * this; whenever possible, return an error to somebody responsible.
@@ -1748,12 +1704,6 @@ void dvmAbort(void)
     /* JNI-supplied abort hook gets right of first refusal */
     if (gDvm.abortHook != NULL)
         (*gDvm.abortHook)();
-
-    /*
-     * On the device, debuggerd will give us a stack trace.
-     * On the host, we have to help ourselves.
-     */
-    dvmPrintNativeBackTrace();
 
     /*
      * If we call abort(), all threads in the process receives a SIBABRT.
