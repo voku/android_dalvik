@@ -32,10 +32,9 @@ LOCAL_PATH:= $(call my-dir)
 # Build for the target (device).
 #
 
-# testing
-#ifeq ($(TARGET_ARCH_VARIANT),armv5te)
-#    WITH_JIT := false
-#endif
+ifeq ($(TARGET_ARCH_VARIANT),armv5te)
+    WITH_JIT := false
+endif
 
 # Build the installed version (libdvm.so) first
 include $(LOCAL_PATH)/ReconfigureDvm.mk
