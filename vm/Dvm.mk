@@ -24,7 +24,19 @@
 #
 # Compiler defines.
 #
-LOCAL_CFLAGS += -fstrict-aliasing -Wstrict-aliasing=2 -fno-align-jumps
+LOCAL_CFLAGS += -fstrict-aliasing \
+			-Wstrict-aliasing=2 \
+			-fno-align-jumps \
+                        -O3 \
+                        -marm \
+                        -march=armv6zk \
+                        -mtune=arm1176jzf-s \
+                        -mfpu=vfp \
+                        -funsafe-loop-optimizations \
+                        -funsafe-math-optimizations \
+                        -funroll-loops \
+                        -mfloat-abi=softfp 
+
 #LOCAL_CFLAGS += -DUSE_INDIRECT_REF
 LOCAL_CFLAGS += -include "dalvikdefines.h"
 
@@ -269,8 +281,8 @@ endif
 MTERP_ARCH_KNOWN := false
 
 ifeq ($(dvm_arch),arm)
-  dvm_arch_variant := armv6-vfp
-  LOCAL_CFLAGS += -march=armv6zk -mfloat-abi=softfp -mfpu=vfp -O3
+  #dvm_arch_variant := armv6-vfp
+  #LOCAL_CFLAGS += -march=armv6zk -mfloat-abi=softfp -mfpu=vfp -O3
   MTERP_ARCH_KNOWN := true
   # Select architecture-specific sources (armv4t, armv5te etc.)
   LOCAL_SRC_FILES += \
