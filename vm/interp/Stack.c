@@ -666,6 +666,7 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     s4* ins;
     int verifyCount, argListLength;
     JValue retval;
+    bool needPop = false;
 
     /* verify arg count */
     if (argList != NULL)
@@ -683,6 +684,7 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     clazz = callPrep(self, method, obj, !noAccessCheck);
     if (clazz == NULL)
         return NULL;
+    needPop = true;
 
     /* "ins" for new frame start at frame pointer plus locals */
     ins = ((s4*)self->curFrame) + (method->registersSize - method->insSize);
@@ -717,10 +719,11 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
                     i, (*(args-1))->obj.clazz->descriptor,
                     (*(types-1))->descriptor);
             }
-            dvmPopFrame(self);      // throw wants to pull PC out of stack
+            dvmPopFrame(self);      // throw wants to pull device out of stack
+            needPop = false;
             dvmThrowException("Ljava/lang/IllegalArgumentException;",
                 "argument type mismatch");
-            goto bail_popped;
+            goto bail;
         }
 
         ins += width;
@@ -749,6 +752,14 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
 #endif
     } else {
         dvmInterpret(self, method, &retval);
+    }
+
+    /*
+     * Pop the frame immediately.  The "wrap" calls below can cause
+     * allocations, and we don't want the GC to walk the now-dead frame.
+     */
+    if (needPop) {
+        dvmPopFrame(self);
     }
 
     /*
