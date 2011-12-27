@@ -80,7 +80,10 @@ public class Main {
         /* this will try to collect and finalize ft */
         System.out.println("gc");
         System.gc();
-        
+      
+        System.out.println("sleep"); 
+        snooze(2000);
+ 
         System.out.println("wimp: " + wimpString(wimp));
         System.out.println("finalize");
         System.runFinalization();

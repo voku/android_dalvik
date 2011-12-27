@@ -23,7 +23,7 @@ import java.lang.reflect.Constructor;
  */
 public class Main {
     private static final String CLASS_PATH = "test-ex.jar";
-    private static final String ODEX_DIR = "/sdcard";
+    private static final String ODEX_DIR = "/data";
     //private static final String ODEX_DIR = ".";
     private static final String ODEX_ALT = "/tmp";
     private static final String LIB_DIR = "/nowhere/nothing/";

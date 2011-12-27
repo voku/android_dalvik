@@ -44,6 +44,12 @@ expected="expected.txt"
 output="output.txt"
 build_output="build-output.txt"
 run_args="--quiet"
+runprog_deadlock=$oldwd/"033-class-init-deadlock"
+#runprog_deadlock= This variable indicates the 033-class-init-deadlock test directory where the output is sorted and compared with the expected output.
+runprog_synctest=$oldwd/"050-sync-test"
+#runprog_synctest = This variable indicates the 050-sync-test directory where the output is sorted and comapred with the expected output.
+runprog_thread=$oldwd/"051-thread"
+#runprog_thread = This variable indicates the 051-thread-test directory where the output is sorted and comapred with the expected output.
 
 dev_mode="no"
 update_mode="no"
@@ -170,7 +176,9 @@ test_dir=`pwd`
 td_info="${test_dir}/${info}"
 td_expected="${test_dir}/${expected}"
 
-tmp_dir="/tmp/test-$$"
+file_time=$(date +%Y%m%d-%H%M%S)
+# Making the file name include time stamp - this is to avoid getting errros durign the back to back runs
+tmp_dir="/tmp/test-$file_time"
 
 if [ '!' '(' -r "$td_info" -a -r "$td_expected" ')' ]; then
     echo "${test_dir}: missing files" 1>&2
@@ -219,6 +227,18 @@ else
     build_exit="$?"
     if [ "$build_exit" = '0' ]; then
         "./${run}" $run_args "$@" >"$output" 2>&1
+         if [ $test_dir = $runprog_deadlock ]; then
+              sort $output > $output
+              sort $expected > $expected
+         fi
+         if [ $test_dir = $runprog_synctest ]; then
+              sort $output > $output
+              sort $expected > $expected
+         fi
+         if [ $test_dir = $runprog_thread ]; then
+              sort $output > $output
+              sort $expected > $expected
+         fi
     else
         cp "$build_output" "$output"
         echo "build exit status: $build_exit" >>"$output"
