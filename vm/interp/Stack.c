@@ -760,6 +760,7 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
      */
     if (needPop) {
         dvmPopFrame(self);
+        needPop = false;
     }
 
     /*
@@ -787,8 +788,9 @@ Object* dvmInvokeMethod(Object* obj, const Method* method,
     }
 
 bail:
-    dvmPopFrame(self);
-bail_popped:
+    if (needPop) {
+        dvmPopFrame(self);
+    }
     return retObj;
 }
 
