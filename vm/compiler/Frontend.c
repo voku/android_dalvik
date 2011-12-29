@@ -632,16 +632,13 @@ bool dvmCompileTrace(JitTraceDescription *desc, int numMaxInsts,
         if (curBB->taken == NULL &&
             (isGoto(lastInsn) || isInvoke ||
             (targetOffset != UNKNOWN_TARGET && targetOffset != curOffset))) {
-            BasicBlock *newBB = NULL;
+            BasicBlock *newBB;
             if (isInvoke) {
                 /* Monomorphic callee */
                 if (callee) {
-                    /* JNI call doesn't need a chaining cell */
-                    if (!dvmIsNativeMethod(callee)) {
-                        newBB = dvmCompilerNewBB(kChainingCellInvokeSingleton);
-                        newBB->startOffset = 0;
-                        newBB->containingMethod = callee;
-                    }
+                    newBB = dvmCompilerNewBB(kChainingCellInvokeSingleton);
+                    newBB->startOffset = 0;
+                    newBB->containingMethod = callee;
                 /* Will resolve at runtime */
                 } else {
                     newBB = dvmCompilerNewBB(kChainingCellInvokePredicted);
