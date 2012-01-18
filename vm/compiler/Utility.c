@@ -305,9 +305,9 @@ void dvmDebugBitVector(char *msg, const BitVector *bv, int length)
 
 void dvmCompilerAbort(CompilationUnit *cUnit)
 {
-    LOGE("Jit: aborting trace compilation, reverting to interpreter");
+    //LOGE("Jit: aborting trace compilation, reverting to interpreter");
     /* Force a traceback in debug builds */
-    assert(0);
+    //assert(0);
     /*
      * Abort translation and force to interpret-only for this trace
      * Matching setjmp in compiler thread work loop in Compiler.c.
