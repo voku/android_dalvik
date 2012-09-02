@@ -1,54 +1,47 @@
 %verify "executed"
 %default {"routine":"__divdi3","special":"$0x80000000"}
     /* div/2addr vA, vB */
-    movzbl    rINST_HI,%eax
+    movzbl    rINSTbl,%eax
     shrl      $$4,%eax                  # eax<- B
-    movzbl    rINST_HI,rINST_FULL
-    andb      $$0xf,rINST_LO            # rINST_FULL<- A
-    SPILL(rPC)
-    GET_VREG_WORD(rPC,%eax,0)
-    GET_VREG_WORD(%eax,%eax,1)
-    movl     rPC,OUT_ARG2(%esp)
+    andb      $$0xf,rINSTbl             # rINST<- A
+    SPILL(rIBASE)                       # save rIBASE/%edx
+    GET_VREG_WORD rIBASE %eax 0
+    GET_VREG_WORD %eax %eax 1
+    movl     rIBASE,OUT_ARG2(%esp)
     testl    %eax,%eax
     je       .L${opcode}_check_zero
     cmpl     $$-1,%eax
     je       .L${opcode}_check_neg1
 .L${opcode}_notSpecial:
-    GET_VREG_WORD(rPC,rINST_FULL,0)
-    GET_VREG_WORD(%ecx,rINST_FULL,1)
+    GET_VREG_WORD rIBASE rINST 0
+    GET_VREG_WORD %ecx rINST 1
 .L${opcode}_notSpecial1:
-    jmp      .L${opcode}_continue
-%break
-
-.L${opcode}_continue:
     movl     %eax,OUT_ARG3(%esp)
-    movl     rPC,OUT_ARG0(%esp)
+    movl     rIBASE,OUT_ARG0(%esp)
     movl     %ecx,OUT_ARG1(%esp)
     call     $routine
 .L${opcode}_finish:
-    movl     rINST_FULL,%ecx
-    SET_VREG_WORD(rPC,%ecx,1)
-    UNSPILL(rPC)
-    SET_VREG_WORD(%eax,%ecx,0)
-    FETCH_INST_WORD(1)
-    ADVANCE_PC(1)
-    GOTO_NEXT
+    SET_VREG_WORD rIBASE rINST 1
+    UNSPILL(rIBASE)                    # restore rIBASE/%edx
+    SET_VREG_WORD %eax rINST 0
+    FETCH_INST_OPCODE 1 %ecx
+    ADVANCE_PC 1
+    GOTO_NEXT_R %ecx
 
 .L${opcode}_check_zero:
-    testl   rPC,rPC
+    testl   rIBASE,rIBASE
     jne     .L${opcode}_notSpecial
-    UNSPILL(rPC)
     jmp     common_errDivideByZero
 .L${opcode}_check_neg1:
-    testl   rPC,%eax
+    testl   rIBASE,%eax
     jne     .L${opcode}_notSpecial
-    GET_VREG_WORD(rPC,rINST_FULL,0)
-    GET_VREG_WORD(%ecx,rINST_FULL,1)
-    testl    rPC,rPC
+    GET_VREG_WORD rIBASE rINST 0
+    GET_VREG_WORD %ecx rINST 1
+    testl    rIBASE,rIBASE
     jne      .L${opcode}_notSpecial1
     cmpl     $$0x80000000,%ecx
     jne      .L${opcode}_notSpecial1
     /* minint / -1, return minint on div, 0 on rem */
     xorl     %eax,%eax
-    movl     $special,%edx
+    movl     $special,rIBASE
     jmp      .L${opcode}_finish

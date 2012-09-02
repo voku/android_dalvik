@@ -16,8 +16,31 @@
 /*
  * Internal heap functions
  */
-#ifndef _DALVIK_ALLOC_HEAP
-#define _DALVIK_ALLOC_HEAP
+#ifndef DALVIK_ALLOC_HEAP_H_
+#define DALVIK_ALLOC_HEAP_H_
+
+struct GcSpec {
+  /* If true, only the application heap is threatened. */
+  bool isPartial;
+  /* If true, the trace is run concurrently with the mutator. */
+  bool isConcurrent;
+  /* Toggles for the soft reference clearing policy. */
+  bool doPreserve;
+  /* A name for this garbage collection mode. */
+  const char *reason;
+};
+
+/* Not enough space for an "ordinary" Object to be allocated. */
+extern const GcSpec *GC_FOR_MALLOC;
+
+/* Automatic GC triggered by exceeding a heap occupancy threshold. */
+extern const GcSpec *GC_CONCURRENT;
+
+/* Explicit GC via Runtime.gc(), VMRuntime.gc(), or SIGUSR1. */
+extern const GcSpec *GC_EXPLICIT;
+
+/* Final attempt to reclaim memory before throwing an OOM. */
+extern const GcSpec *GC_BEFORE_OOM;
 
 /*
  * Initialize the GC heap.
@@ -58,35 +81,22 @@ void dvmHeapThreadShutdown(void);
 size_t dvmObjectSizeInHeap(const Object *obj);
 #endif
 
-typedef enum {
-    /* GC all heaps. */
-    GC_FULL,
-    /* GC just the first heap. */
-    GC_PARTIAL
-} GcMode;
-
-typedef enum {
-    /* Not enough space for an "ordinary" Object to be allocated. */
-    GC_FOR_MALLOC,
-    /* Automatic GC triggered by exceeding a heap occupancy threshold. */
-    GC_CONCURRENT,
-    /* Explicit GC via Runtime.gc(), VMRuntime.gc(), or SIGUSR1. */
-    GC_EXPLICIT,
-    /* GC to try to reduce heap footprint to allow more non-GC'ed memory. */
-    GC_EXTERNAL_ALLOC,
-    /* GC to dump heap contents to a file, only used under WITH_HPROF */
-    GC_HPROF_DUMP_HEAP
-} GcReason;
-
 /*
  * Run the garbage collector without doing any locking.
  */
-void dvmCollectGarbageInternal(bool clearSoftRefs, GcReason reason);
+void dvmCollectGarbageInternal(const GcSpec *spec);
 
 /*
- * Blocks the until the GC thread signals the completion of a
- * concurrent GC.
+ * Blocks the calling thread until the garbage collector is inactive.
+ * The caller must hold the heap lock as this call releases and
+ * re-acquires the heap lock.  After returning, no garbage collection
+ * will be in progress and the heap lock will be held by the caller.
  */
-void dvmWaitForConcurrentGcToComplete(void);
+bool dvmWaitForConcurrentGcToComplete(void);
 
-#endif  // _DALVIK_ALLOC_HEAP
+/*
+ * Returns true iff <obj> points to a valid allocated object.
+ */
+bool dvmIsValidObject(const Object* obj);
+
+#endif  // DALVIK_ALLOC_HEAP_H_

@@ -21,6 +21,7 @@ import com.android.dx.rop.type.Type;
 import com.android.dx.rop.type.TypeList;
 import com.android.dx.rop.type.TypeBearer;
 import com.android.dx.rop.cst.Constant;
+import com.android.dx.rop.cst.CstInteger;
 
 /**
  * Plain instruction, which has no embedded data and which cannot possibly
@@ -95,7 +96,7 @@ public final class PlainInsn
 
     /** {@inheritDoc} */
     @Override
-    public Insn withLastSourceLiteral() {
+    public Insn withSourceLiteral() {
         RegisterSpecList sources = getSources();
         int szSources = sources.size();
 
@@ -106,24 +107,40 @@ public final class PlainInsn
         TypeBearer lastType = sources.get(szSources - 1).getTypeBearer();
 
         if (!lastType.isConstant()) {
+            // Check for reverse subtraction, where first source is constant
+            TypeBearer firstType = sources.get(0).getTypeBearer();
+            if (szSources == 2 && firstType.isConstant()) {
+                Constant cst = (Constant) firstType;
+                RegisterSpecList newSources = sources.withoutFirst();
+                Rop newRop = Rops.ropFor(getOpcode().getOpcode(), getResult(),
+                                             newSources, cst);
+                return new PlainCstInsn(newRop, getPosition(), getResult(),
+                                            newSources, cst);
+            }
             return this;
+        } else {
+
+            Constant cst = (Constant) lastType;
+
+            RegisterSpecList newSources = sources.withoutLast();
+
+            Rop newRop;
+            try {
+                // Check for constant subtraction and flip it to be addition
+                int opcode = getOpcode().getOpcode();
+                if (opcode == RegOps.SUB && cst instanceof CstInteger) {
+                    opcode = RegOps.ADD;
+                    cst = CstInteger.make(-((CstInteger)cst).getValue());
+                }
+                newRop = Rops.ropFor(opcode, getResult(), newSources, cst);
+            } catch (IllegalArgumentException ex) {
+                // There's no rop for this case
+                return this;
+            }
+
+            return new PlainCstInsn(newRop, getPosition(),
+                    getResult(), newSources, cst);
         }
-
-        Constant cst = (Constant) lastType;
-
-        RegisterSpecList newSources = sources.withoutLast();
-
-        Rop newRop;
-        try {
-            newRop = Rops.ropFor(getOpcode().getOpcode(),
-                    getResult(), newSources, (Constant)lastType);
-        } catch (IllegalArgumentException ex) {
-            // There's no rop for this case
-            return this;
-        }
-
-        return new PlainCstInsn(newRop, getPosition(),
-                getResult(), newSources, cst);
     }
 
 

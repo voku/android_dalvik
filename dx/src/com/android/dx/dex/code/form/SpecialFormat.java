@@ -17,7 +17,6 @@
 package com.android.dx.dex.code.form;
 
 import com.android.dx.dex.code.DalvInsn;
-import com.android.dx.dex.code.DalvOps;
 import com.android.dx.dex.code.InsnFormat;
 import com.android.dx.util.AnnotatedOutput;
 
@@ -63,12 +62,6 @@ public final class SpecialFormat extends InsnFormat {
     @Override
     public boolean isCompatible(DalvInsn insn) {
         return true;
-    }
-
-    /** {@inheritDoc} */
-    @Override
-    public InsnFormat nextUp() {
-        throw new RuntimeException("unsupported");
     }
 
     /** {@inheritDoc} */

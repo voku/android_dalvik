@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef _DALVIK_HPROF_HPROF
-#define _DALVIK_HPROF_HPROF
+#ifndef DALVIK_HPROF_HPROF_H_
+#define DALVIK_HPROF_HPROF_H_
 
 #include "Dalvik.h"
 
@@ -31,11 +31,8 @@ typedef u4 hprof_id;
 typedef hprof_id hprof_string_id;
 typedef hprof_id hprof_object_id;
 typedef hprof_id hprof_class_object_id;
-#if WITH_HPROF_STACK
-typedef hprof_id hprof_stack_frame_id;
-#endif
 
-typedef enum hprof_basic_type {
+enum hprof_basic_type {
     hprof_basic_object = 2,
     hprof_basic_boolean = 4,
     hprof_basic_char = 5,
@@ -45,9 +42,9 @@ typedef enum hprof_basic_type {
     hprof_basic_short = 9,
     hprof_basic_int = 10,
     hprof_basic_long = 11,
-} hprof_basic_type;
+};
 
-typedef enum hprof_tag_t {
+enum hprof_tag_t {
     HPROF_TAG_STRING = 0x01,
     HPROF_TAG_LOAD_CLASS = 0x02,
     HPROF_TAG_UNLOAD_CLASS = 0x03,
@@ -62,13 +59,13 @@ typedef enum hprof_tag_t {
     HPROF_TAG_HEAP_DUMP_END = 0x2C,
     HPROF_TAG_CPU_SAMPLES = 0x0D,
     HPROF_TAG_CONTROL_SETTINGS = 0x0E,
-} hprof_tag_t;
+};
 
 /* Values for the first byte of
  * HEAP_DUMP and HEAP_DUMP_SEGMENT
  * records:
  */
-typedef enum hprof_heap_tag_t {
+enum hprof_heap_tag_t {
     /* standard */
     HPROF_ROOT_UNKNOWN = 0xFF,
     HPROF_ROOT_JNI_GLOBAL = 0x01,
@@ -87,14 +84,14 @@ typedef enum hprof_heap_tag_t {
     /* Android */
     HPROF_HEAP_DUMP_INFO = 0xfe,
     HPROF_ROOT_INTERNED_STRING = 0x89,
-    HPROF_ROOT_FINALIZING = 0x8a,
+    HPROF_ROOT_FINALIZING = 0x8a,  /* obsolete */
     HPROF_ROOT_DEBUGGER = 0x8b,
-    HPROF_ROOT_REFERENCE_CLEANUP = 0x8c,
+    HPROF_ROOT_REFERENCE_CLEANUP = 0x8c,  /* obsolete */
     HPROF_ROOT_VM_INTERNAL = 0x8d,
     HPROF_ROOT_JNI_MONITOR = 0x8e,
-    HPROF_UNREACHABLE = 0x90,  /* deprecated */
+    HPROF_UNREACHABLE = 0x90,  /* obsolete */
     HPROF_PRIMITIVE_ARRAY_NODATA_DUMP = 0xc3,
-} hprof_heap_tag_t;
+};
 
 /* Represents a top-level hprof record, whose serialized
  * format is:
@@ -105,22 +102,22 @@ typedef enum hprof_heap_tag_t {
  *                    and belong to this record
  *     [u1]*  BODY: as many bytes as specified in the above u4 field
  */
-typedef struct hprof_record_t {
+struct hprof_record_t {
     unsigned char *body;
     u4 time;
     u4 length;
     size_t allocLen;
     u1 tag;
     bool dirty;
-} hprof_record_t;
+};
 
-typedef enum {
+enum HprofHeapId {
     HPROF_HEAP_DEFAULT = 0,
     HPROF_HEAP_ZYGOTE = 'Z',
     HPROF_HEAP_APP = 'A'
-} HprofHeapId;
+};
 
-typedef struct hprof_context_t {
+struct hprof_context_t {
     /* curRec *must* be first so that we
      * can cast from a context to a record.
      */
@@ -143,11 +140,11 @@ typedef struct hprof_context_t {
     size_t fileDataSize;        // for open_memstream
     FILE *memFp;
     int fd;
-} hprof_context_t;
+};
 
 
 /*
- * HprofString.c functions
+ * HprofString.cpp functions
  */
 
 hprof_string_id hprofLookupStringId(const char *str);
@@ -159,7 +156,7 @@ int hprofShutdown_String(void);
 
 
 /*
- * HprofClass.c functions
+ * HprofClass.cpp functions
  */
 
 hprof_class_object_id hprofLookupClassId(const ClassObject *clazz);
@@ -171,7 +168,7 @@ int hprofShutdown_Class(void);
 
 
 /*
- * HprofHeap.c functions
+ * HprofHeap.cpp functions
  */
 
 int hprofStartHeapDump(hprof_context_t *ctx);
@@ -185,7 +182,7 @@ int hprofMarkRootObject(hprof_context_t *ctx,
 int hprofDumpHeapObject(hprof_context_t *ctx, const Object *obj);
 
 /*
- * HprofOutput.c functions
+ * HprofOutput.cpp functions
  */
 
 void hprofContextInit(hprof_context_t *ctx, char *fileName, int fd,
@@ -217,47 +214,14 @@ int hprofAddU8ListToRecord(hprof_record_t *rec,
 #define hprofAddIdListToRecord(rec, values, numValues) \
             hprofAddU4ListToRecord((rec), (const u4 *)(values), (numValues))
 
-#if WITH_HPROF_STACK
-
 /*
- * HprofStack.c functions
- */
-
-void hprofFillInStackTrace(void *objectPtr);
-
-int hprofDumpStacks(hprof_context_t *ctx);
-
-int hprofStartup_Stack(void);
-int hprofShutdown_Stack(void);
-
-/*
- * HprofStackFrame.c functions
- */
-
-int hprofDumpStackFrames(hprof_context_t *ctx);
-
-int hprofStartup_StackFrame(void);
-int hprofShutdown_StackFrame(void);
-
-#endif
-
-/*
- * Hprof.c functions
+ * Hprof.cpp functions
  */
 
 hprof_context_t* hprofStartup(const char *outputFileName, int fd,
     bool directToDdms);
 bool hprofShutdown(hprof_context_t *ctx);
 void hprofFreeContext(hprof_context_t *ctx);
-
-/*
- * Heap.c functions
- *
- * The contents of the hprof directory have no knowledge of
- * the heap implementation; these functions require heap knowledge,
- * so they are implemented in Heap.c.
- */
 int hprofDumpHeap(const char* fileName, int fd, bool directToDdms);
-void dvmHeapSetHprofGcScanState(hprof_heap_tag_t state, u4 threadSerialNumber);
 
-#endif  // _DALVIK_HPROF_HPROF
+#endif  // DALVIK_HPROF_HPROF_H_

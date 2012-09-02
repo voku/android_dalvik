@@ -18,17 +18,17 @@
  * Verification-time map of data section items
  */
 
-#ifndef _LIBDEX_DEXDATAMAP
-#define _LIBDEX_DEXDATAMAP
+#ifndef LIBDEX_DEXDATAMAP_H_
+#define LIBDEX_DEXDATAMAP_H_
 
 #include "DexFile.h"
 
-typedef struct DexDataMap {
+struct DexDataMap {
     u4 count;    /* number of items currently in the map */
     u4 max;      /* maximum number of items that may be held */
     u4* offsets; /* array of item offsets */
     u2* types;   /* corresponding array of item types */
-} DexDataMap;
+};
 
 /*
  * Allocate and initialize a DexDataMap. Returns NULL on failure.
@@ -70,4 +70,4 @@ DEX_INLINE bool dexDataMapVerify0Ok(DexDataMap* map, u4 offset, u2 type) {
     return dexDataMapVerify(map, offset, type);
 }
 
-#endif /*_LIBDEX_DEXDATAMAP*/
+#endif  // LIBDEX_DEXDATAMAP_H_

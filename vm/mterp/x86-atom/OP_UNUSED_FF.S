@@ -13,8 +13,4 @@
     * limitations under the License.
     */
 
-   /*
-    * File: OP_UNUSED_FF.S
-    */
-
 %include "x86-atom/unused.S"

@@ -7,23 +7,23 @@
      *
      * (*gDvmInlineOpsTable[opIndex].func)(arg0, arg1, arg2, arg3, pResult)
      *
+     * Ignores argument count - always loads 4.
+     *
      */
     /* [opt] execute-inline vAA, {vC, vD, vE, vF}, inline@BBBB */
-    GET_GLUE(%ecx)
-    EXPORT_PC()
+    movl      rSELF,%ecx
+    EXPORT_PC
     movzwl    2(rPC),%eax               # eax<- BBBB
-    leal      offGlue_retval(%ecx),%ecx # ecx<- & glue->retval
+    leal      offThread_retval(%ecx),%ecx # ecx<- & self->retval
+    SPILL(rIBASE)                       # preserve rIBASE
     movl      %ecx,OUT_ARG4(%esp)
-    sarl      $$12,rINST_FULL           # rINST_FULL<- arg count (0-4)
-    SPILL(rPC)
     call      .L${opcode}_continue      # make call; will return after
-    UNSPILL(rPC)
+    UNSPILL(rIBASE)                     # restore rIBASE
     testl     %eax,%eax                 # successful?
-    FETCH_INST_WORD(3)
+    FETCH_INST_OPCODE 3 %ecx
     je        common_exceptionThrown    # no, handle exception
-    ADVANCE_PC(3)
-    GOTO_NEXT
-%break
+    ADVANCE_PC 3
+    GOTO_NEXT_R %ecx
 
 .L${opcode}_continue:
     /*
@@ -35,30 +35,30 @@
      *
      *  Go ahead and load all 4 args, even if not used.
      */
-    movzwl    4(rPC),rPC
+    movzwl    4(rPC),rIBASE
 
     movl      $$0xf,%ecx
-    andl      rPC,%ecx
-    GET_VREG(%ecx,%ecx)
-    sarl      $$4,rPC
+    andl      rIBASE,%ecx
+    GET_VREG_R  %ecx %ecx
+    sarl      $$4,rIBASE
     movl      %ecx,4+OUT_ARG0(%esp)
 
     movl      $$0xf,%ecx
-    andl      rPC,%ecx
-    GET_VREG(%ecx,%ecx)
-    sarl      $$4,rPC
+    andl      rIBASE,%ecx
+    GET_VREG_R  %ecx %ecx
+    sarl      $$4,rIBASE
     movl      %ecx,4+OUT_ARG1(%esp)
 
     movl      $$0xf,%ecx
-    andl      rPC,%ecx
-    GET_VREG(%ecx,%ecx)
-    sarl      $$4,rPC
+    andl      rIBASE,%ecx
+    GET_VREG_R  %ecx %ecx
+    sarl      $$4,rIBASE
     movl      %ecx,4+OUT_ARG2(%esp)
 
     movl      $$0xf,%ecx
-    andl      rPC,%ecx
-    GET_VREG(%ecx,%ecx)
-    sarl      $$4,rPC
+    andl      rIBASE,%ecx
+    GET_VREG_R  %ecx %ecx
+    sarl      $$4,rIBASE
     movl      %ecx,4+OUT_ARG3(%esp)
 
     sall      $$4,%eax      # index *= sizeof(table entry)

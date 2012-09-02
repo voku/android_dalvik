@@ -17,8 +17,8 @@
 /*
  * Dalvik bytecode verification subroutines.
  */
-#ifndef _DALVIK_VERIFYSUBS
-#define _DALVIK_VERIFYSUBS
+#ifndef DALVIK_VERIFYSUBS_H_
+#define DALVIK_VERIFYSUBS_H_
 
 /*
  * InsnFlags is a 32-bit integer with the following layout:
@@ -46,14 +46,6 @@ bool dvmComputeCodeWidths(const Method* meth, InsnFlags* insnFlags,
 /* set the "in try" flag for sections of code wrapped with a "try" block */
 bool dvmSetTryFlags(const Method* meth, InsnFlags* insnFlags);
 
-/* check switch targets and set the "branch target" flag for destinations */
-bool dvmCheckSwitchTargets(const Method* meth, InsnFlags* insnFlags,
-    int curOffset);
-
-/* verify branch target and set "branch target" flag on the destination */
-bool dvmCheckBranchTarget(const Method* meth, InsnFlags* insnFlags,
-    int curOffset, bool selfOkay);
-
 /* verification failure reporting */
 #define LOG_VFY(...)                dvmLogVerifyFailure(NULL, __VA_ARGS__)
 #define LOG_VFY_METH(_meth, ...)    dvmLogVerifyFailure(_meth, __VA_ARGS__)
@@ -69,11 +61,14 @@ void dvmLogVerifyFailure(const Method* meth, const char* format, ...)
 void dvmLogUnableToResolveClass(const char* missingClassDescr,
     const Method* meth);
 
-/* extract the relative branch target from a branch instruction */
-bool dvmGetBranchTarget(const Method* meth, InsnFlags* insnFlags,
-    int curOffset, int* pOffset, bool* pConditional);
+/* extract the relative branch offset from a branch instruction */
+bool dvmGetBranchOffset(const Method* meth, const InsnFlags* insnFlags,
+    int curOffset, s4* pOffset, bool* pConditional);
 
 /* return a RegType enumeration value that "value" just fits into */
 char dvmDetermineCat1Const(s4 value);
 
-#endif /*_DALVIK_VERIFYSUBS*/
+/* debugging */
+bool dvmWantVerboseVerification(const Method* meth);
+
+#endif  // DALVIK_VERIFYSUBS_H_

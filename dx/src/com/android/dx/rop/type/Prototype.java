@@ -19,7 +19,7 @@ package com.android.dx.rop.type;
 import java.util.HashMap;
 
 /**
- * Representation of a method decriptor. Instances of this class are
+ * Representation of a method descriptor. Instances of this class are
  * generally interned and may be usefully compared with each other
  * using {@code ==}.
  */
@@ -55,7 +55,10 @@ public final class Prototype implements Comparable<Prototype> {
             throw new NullPointerException("descriptor == null");
         }
 
-        Prototype result = internTable.get(descriptor);
+        Prototype result;
+        synchronized (internTable) {
+            result = internTable.get(descriptor);
+        }
         if (result != null) {
             return result;
         }

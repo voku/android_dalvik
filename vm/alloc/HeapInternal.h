@@ -16,115 +16,57 @@
 /*
  * Types and macros used internally by the heap.
  */
-#ifndef _DALVIK_ALLOC_HEAP_INTERNAL
-#define _DALVIK_ALLOC_HEAP_INTERNAL
+#ifndef DALVIK_ALLOC_HEAP_INTERNAL_H_
+#define DALVIK_ALLOC_HEAP_INTERNAL_H_
 
-#include <time.h>  // for struct timespec
-
-#include "HeapTable.h"
 #include "MarkSweep.h"
 
+struct HeapSource;
+
 struct GcHeap {
-    HeapSource      *heapSource;
-
-    /* List of heap objects that will require finalization when
-     * collected.  I.e., instance objects
-     *
-     *     a) whose class definitions override java.lang.Object.finalize()
-     *
-     * *** AND ***
-     *
-     *     b) that have never been finalized.
-     *
-     * Note that this does not exclude non-garbage objects;  this
-     * is not the list of pending finalizations, but of objects that
-     * potentially have finalization in their futures.
-     */
-    LargeHeapRefTable  *finalizableRefs;
-
-    /* The list of objects that need to have finalize() called
-     * on themselves.  These references are part of the root set.
-     *
-     * This table is protected by gDvm.heapWorkerListLock, which must
-     * be acquired after the heap lock.
-     */
-    LargeHeapRefTable  *pendingFinalizationRefs;
+    HeapSource *heapSource;
 
     /* Linked lists of subclass instances of java/lang/ref/Reference
      * that we find while recursing.  The "next" pointers are hidden
-     * in the objects' <code>int Reference.vmData</code> fields.
-     * These lists are cleared and rebuilt each time the GC runs.
+     * in the Reference objects' pendingNext fields.  These lists are
+     * cleared and rebuilt each time the GC runs.
      */
-    Object         *softReferences;
-    Object         *weakReferences;
-    Object         *phantomReferences;
+    Object *softReferences;
+    Object *weakReferences;
+    Object *finalizerReferences;
+    Object *phantomReferences;
 
-    /* The list of Reference objects that need to be cleared and/or
-     * enqueued.  The bottom two bits of the object pointers indicate
-     * whether they should be cleared and/or enqueued.
-     *
-     * This table is protected by gDvm.heapWorkerListLock, which must
-     * be acquired after the heap lock.
+    /* The list of Reference objects that need to be enqueued.
      */
-    LargeHeapRefTable  *referenceOperations;
-
-    /* If non-null, the method that the HeapWorker is currently
-     * executing.
-     */
-    Object *heapWorkerCurrentObject;
-    Method *heapWorkerCurrentMethod;
-
-    /* If heapWorkerCurrentObject is non-null, this gives the time when
-     * HeapWorker started executing that method.  The time value must come
-     * from dvmGetRelativeTimeUsec().
-     *
-     * The "Cpu" entry tracks the per-thread CPU timer (when available).
-     */
-    u8 heapWorkerInterpStartTime;
-    u8 heapWorkerInterpCpuStartTime;
-
-    /* If any fields are non-zero, indicates the next (absolute) time that
-     * the HeapWorker thread should call dvmHeapSourceTrim().
-     */
-    struct timespec heapWorkerNextTrim;
+    Object *clearedReferences;
 
     /* The current state of the mark step.
      * Only valid during a GC.
      */
-    GcMarkContext   markContext;
+    GcMarkContext markContext;
 
     /* GC's card table */
-    u1*             cardTableBase;
-    size_t          cardTableLength;
+    u1* cardTableBase;
+    size_t cardTableLength;
+    size_t cardTableMaxLength;
+    size_t cardTableOffset;
 
     /* Is the GC running?  Used to avoid recursive calls to GC.
      */
-    bool            gcRunning;
+    bool gcRunning;
 
     /*
      * Debug control values
      */
-
-    int             ddmHpifWhen;
-    int             ddmHpsgWhen;
-    int             ddmHpsgWhat;
-    int             ddmNhsgWhen;
-    int             ddmNhsgWhat;
-
-#if WITH_HPROF
-    bool            hprofDumpOnGc;
-    const char*     hprofFileName;
-    int             hprofFd;
-    hprof_context_t *hprofContext;
-    int             hprofResult;
-    bool            hprofDirectToDdms;
-#endif
+    int ddmHpifWhen;
+    int ddmHpsgWhen;
+    int ddmHpsgWhat;
+    int ddmNhsgWhen;
+    int ddmNhsgWhat;
 };
 
 bool dvmLockHeap(void);
 void dvmUnlockHeap(void);
-void dvmLogGcStats(size_t numFreed, size_t sizeFreed, size_t gcTimeMs);
-void dvmLogMadviseStats(size_t madvisedSizes[], size_t arrayLen);
 
 /*
  * Logging helpers
@@ -136,27 +78,20 @@ void dvmLogMadviseStats(size_t madvisedSizes[], size_t arrayLen);
 #define LOGV_HEAP(...)    ((void)0)
 #define LOGD_HEAP(...)    ((void)0)
 #else
-#define LOGV_HEAP(...)    LOG(LOG_VERBOSE, HEAP_LOG_TAG, __VA_ARGS__)
-#define LOGD_HEAP(...)    LOG(LOG_DEBUG, HEAP_LOG_TAG, __VA_ARGS__)
+#define LOGV_HEAP(...)    ALOG(LOG_VERBOSE, HEAP_LOG_TAG, __VA_ARGS__)
+#define LOGD_HEAP(...)    ALOG(LOG_DEBUG, HEAP_LOG_TAG, __VA_ARGS__)
 #endif
-#define LOGI_HEAP(...)    LOG(LOG_INFO, HEAP_LOG_TAG, __VA_ARGS__)
-#define LOGW_HEAP(...)    LOG(LOG_WARN, HEAP_LOG_TAG, __VA_ARGS__)
-#define LOGE_HEAP(...)    LOG(LOG_ERROR, HEAP_LOG_TAG, __VA_ARGS__)
-
-#define QUIET_ZYGOTE_GC 1
-#if QUIET_ZYGOTE_GC
-#undef LOGI_HEAP
 #define LOGI_HEAP(...) \
     do { \
-        if (!gDvm.zygote) { \
-            LOG(LOG_INFO, HEAP_LOG_TAG, __VA_ARGS__); \
-        } \
-    } while (false)
-#endif
+        if (!gDvm.zygote) { ALOG(LOG_INFO, HEAP_LOG_TAG, __VA_ARGS__); } \
+    } while (0)
+
+#define LOGW_HEAP(...)    ALOG(LOG_WARN, HEAP_LOG_TAG, __VA_ARGS__)
+#define LOGE_HEAP(...)    ALOG(LOG_ERROR, HEAP_LOG_TAG, __VA_ARGS__)
 
 #define FRACTIONAL_MB(n)    (n) / (1024 * 1024), \
                             ((((n) % (1024 * 1024)) / 1024) * 1000) / 1024
 #define FRACTIONAL_PCT(n,max)    ((n) * 100) / (max), \
                                  (((n) * 1000) / (max)) % 10
 
-#endif  // _DALVIK_ALLOC_HEAP_INTERNAL
+#endif  // DALVIK_ALLOC_HEAP_INTERNAL_H_

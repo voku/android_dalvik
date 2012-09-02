@@ -17,10 +17,13 @@
 package com.android.dx.command.dexer;
 
 import com.android.dx.Version;
-import com.android.dx.cf.iface.ParseException;
+import com.android.dx.cf.code.SimException;
 import com.android.dx.cf.direct.ClassPathOpener;
+import com.android.dx.cf.iface.ParseException;
 import com.android.dx.command.DxConsole;
 import com.android.dx.command.UsageException;
+import com.android.dx.dex.DexFormat;
+import com.android.dx.dex.DexOptions;
 import com.android.dx.dex.cf.CfOptions;
 import com.android.dx.dex.cf.CfTranslator;
 import com.android.dx.dex.cf.CodeStatistics;
@@ -28,23 +31,31 @@ import com.android.dx.dex.code.PositionList;
 import com.android.dx.dex.file.ClassDefItem;
 import com.android.dx.dex.file.DexFile;
 import com.android.dx.dex.file.EncodedMethod;
+import com.android.dx.io.DexBuffer;
+import com.android.dx.merge.CollisionPolicy;
+import com.android.dx.merge.DexMerger;
 import com.android.dx.rop.annotation.Annotation;
 import com.android.dx.rop.annotation.Annotations;
 import com.android.dx.rop.annotation.AnnotationsList;
 import com.android.dx.rop.cst.CstNat;
-import com.android.dx.rop.cst.CstUtf8;
-
+import com.android.dx.rop.cst.CstString;
+import com.android.dx.util.FileUtils;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
-import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
@@ -92,12 +103,6 @@ public class Main {
         "lead to pain, suffering, grief, and lamentation.\n";
 
     /**
-     * {@code non-null;} name for the {@code .dex} file that goes into
-     * {@code .jar} files
-     */
-    private static final String DEX_IN_JAR_NAME = "classes.dex";
-
-    /**
      * {@code non-null;} name of the standard manifest file in {@code .jar}
      * files
      */
@@ -117,8 +122,8 @@ public class Main {
      */
     private static final String[] JAVAX_CORE = {
         "accessibility", "crypto", "imageio", "management", "naming", "net",
-        "print", "rmi", "security", "sound", "sql", "swing", "transaction",
-        "xml"
+        "print", "rmi", "security", "sip", "sound", "sql", "swing",
+        "transaction", "xml"
     };
 
     /** number of warnings during processing */
@@ -139,6 +144,18 @@ public class Main {
      */
     private static TreeMap<String, byte[]> outputResources;
 
+    /** Library .dex files to merge into the output .dex. */
+    private static final List<byte[]> libraryDexBuffers = new ArrayList<byte[]>();
+
+    /** thread pool object used for multi-threaded file processing */
+    private static ExecutorService threadPool;
+
+    /** true if any files are successfully processed */
+    private static boolean anyFilesProcessed;
+
+    /** class files older than this must be defined in the target dex file. */
+    private static long minimumFileAge = 0;
+
     /**
      * This class is uninstantiable.
      */
@@ -150,7 +167,7 @@ public class Main {
      * Run and exit if something unexpected happened.
      * @param argArray the command line arguments
      */
-    public static void main(String[] argArray) {
+    public static void main(String[] argArray) throws IOException {
         Arguments arguments = new Arguments();
         arguments.parse(argArray);
 
@@ -165,23 +182,51 @@ public class Main {
      * @param arguments the data + parameters for the conversion
      * @return 0 if success > 0 otherwise.
      */
-    public static int run(Arguments arguments) {
+    public static int run(Arguments arguments) throws IOException {
         // Reset the error/warning count to start fresh.
         warnings = 0;
         errors = 0;
 
         args = arguments;
-        args.makeCfOptions();
+        args.makeOptionsObjects();
+
+        File incrementalOutFile = null;
+        if (args.incremental) {
+            if (args.outName == null) {
+                System.err.println(
+                        "error: no incremental output name specified");
+                return -1;
+            }
+            incrementalOutFile = new File(args.outName);
+            if (incrementalOutFile.exists()) {
+                minimumFileAge = incrementalOutFile.lastModified();
+            }
+        }
 
         if (!processAllFiles()) {
             return 1;
         }
 
-        byte[] outArray = writeDex();
-
-        if (outArray == null) {
-            return 2;
+        if (args.incremental && !anyFilesProcessed) {
+            return 0; // this was a no-op incremental build
         }
+
+        // this array is null if no classes were defined
+        byte[] outArray = null;
+
+        if (!outputDex.isEmpty()) {
+            outArray = writeDex();
+
+            if (outArray == null) {
+                return 2;
+            }
+        }
+
+        if (args.incremental) {
+            outArray = mergeIncremental(outArray, incrementalOutFile);
+        }
+
+        outArray = mergeLibraryDexBuffers(outArray);
 
         if (args.jarOutput) {
             // Effectively free up the (often massive) DexFile memory.
@@ -190,9 +235,69 @@ public class Main {
             if (!createJar(args.outName, outArray)) {
                 return 3;
             }
+        } else if (outArray != null && args.outName != null) {
+            OutputStream out = openOutput(args.outName);
+            out.write(outArray);
+            closeOutput(out);
         }
 
         return 0;
+    }
+
+    /**
+     * Merges the dex files {@code update} and {@code base}, preferring
+     * {@code update}'s definition for types defined in both dex files.
+     *
+     * @param base a file to find the previous dex file. May be a .dex file, a
+     *     jar file possibly containing a .dex file, or null.
+     * @return the bytes of the merged dex file, or null if both the update
+     *     and the base dex do not exist.
+     */
+    private static byte[] mergeIncremental(byte[] update, File base) throws IOException {
+        DexBuffer dexA = null;
+        DexBuffer dexB = null;
+
+        if (update != null) {
+            dexA = new DexBuffer(update);
+        }
+
+        if (base.exists()) {
+            dexB = new DexBuffer(base);
+        }
+
+        DexBuffer result;
+        if (dexA == null && dexB == null) {
+            return null;
+        } else if (dexA == null) {
+            result = dexB;
+        } else if (dexB == null) {
+            result = dexA;
+        } else {
+            result = new DexMerger(dexA, dexB, CollisionPolicy.KEEP_FIRST).merge();
+        }
+
+        ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
+        result.writeTo(bytesOut);
+        return bytesOut.toByteArray();
+    }
+
+    /**
+     * Merges the dex files in library jars. If multiple dex files define the
+     * same type, this fails with an exception.
+     */
+    private static byte[] mergeLibraryDexBuffers(byte[] outArray) throws IOException {
+        for (byte[] libraryDexBuffer : libraryDexBuffers) {
+            if (outArray == null) {
+                outArray = libraryDexBuffer;
+                continue;
+            }
+
+            DexBuffer a = new DexBuffer(outArray);
+            DexBuffer b = new DexBuffer(libraryDexBuffer);
+            DexBuffer ab = new DexMerger(a, b, CollisionPolicy.FAIL).merge();
+            outArray = ab.getBytes();
+        }
+        return outArray;
     }
 
     /**
@@ -202,7 +307,7 @@ public class Main {
      * @return whether processing was successful
      */
     private static boolean processAllFiles() {
-        outputDex = new DexFile();
+        outputDex = new DexFile(args.dexOptions);
 
         if (args.jarOutput) {
             outputResources = new TreeMap<String, byte[]>();
@@ -212,18 +317,33 @@ public class Main {
             outputDex.setDumpWidth(args.dumpWidth);
         }
 
-        boolean any = false;
+        anyFilesProcessed = false;
         String[] fileNames = args.fileNames;
+
+        if (args.numThreads > 1) {
+            threadPool = Executors.newFixedThreadPool(args.numThreads);
+        }
 
         try {
             for (int i = 0; i < fileNames.length; i++) {
-                any |= processOne(fileNames[i]);
+                if (processOne(fileNames[i])) {
+                    anyFilesProcessed = true;
+                }
             }
         } catch (StopProcessing ex) {
             /*
              * Ignore it and just let the warning/error reporting do
              * their things.
              */
+        }
+
+        if (args.numThreads > 1) {
+            try {
+                threadPool.shutdown();
+                threadPool.awaitTermination(600L, TimeUnit.SECONDS);
+            } catch (InterruptedException ex) {
+                throw new RuntimeException("Timed out waiting for threads.");
+            }
         }
 
         if (warnings != 0) {
@@ -237,7 +357,11 @@ public class Main {
             return false;
         }
 
-        if (!(any || args.emptyOk)) {
+        if (args.incremental && !anyFilesProcessed) {
+            return true;
+        }
+
+        if (!(anyFilesProcessed || args.emptyOk)) {
             DxConsole.err.println("no classfiles specified");
             return false;
         }
@@ -262,15 +386,25 @@ public class Main {
 
         opener = new ClassPathOpener(pathname, false,
                 new ClassPathOpener.Consumer() {
-            public boolean processFileBytes(String name, byte[] bytes) {
-                return Main.processFileBytes(name, bytes);
+            public boolean processFileBytes(String name, long lastModified, byte[] bytes) {
+                if (args.numThreads > 1) {
+                    threadPool.execute(new ParallelProcessor(name, lastModified, bytes));
+                    return false;
+                } else {
+                    return Main.processFileBytes(name, lastModified, bytes);
+                }
             }
             public void onException(Exception ex) {
                 if (ex instanceof StopProcessing) {
                     throw (StopProcessing) ex;
+                } else if (ex instanceof SimException) {
+                    DxConsole.err.println("\nEXCEPTION FROM SIMULATION:");
+                    DxConsole.err.println(ex.getMessage() + "\n");
+                    DxConsole.err.println(((SimException) ex).getContext());
+                } else {
+                    DxConsole.err.println("\nUNEXPECTED TOP-LEVEL EXCEPTION:");
+                    ex.printStackTrace(DxConsole.err);
                 }
-                DxConsole.err.println("\nUNEXPECTED TOP-LEVEL EXCEPTION:");
-                ex.printStackTrace(DxConsole.err);
                 errors++;
             }
             public void onProcessArchiveStart(File file) {
@@ -291,11 +425,12 @@ public class Main {
      * @param bytes {@code non-null;} contents of the file
      * @return whether processing was successful
      */
-    private static boolean processFileBytes(String name, byte[] bytes) {
+    private static boolean processFileBytes(String name, long lastModified, byte[] bytes) {
         boolean isClass = name.endsWith(".class");
+        boolean isClassesDex = name.equals(DexFormat.DEX_IN_JAR_NAME);
         boolean keepResources = (outputResources != null);
 
-        if (!isClass && !keepResources) {
+        if (!isClass && !isClassesDex && !keepResources) {
             if (args.verbose) {
                 DxConsole.out.println("ignored resource " + name);
             }
@@ -310,11 +445,23 @@ public class Main {
 
         if (isClass) {
             if (keepResources && args.keepClassesInJar) {
-                outputResources.put(fixedName, bytes);
+                synchronized (outputResources) {
+                    outputResources.put(fixedName, bytes);
+                }
+            }
+            if (lastModified < minimumFileAge) {
+                return true;
             }
             return processClass(fixedName, bytes);
+        } else if (isClassesDex) {
+            synchronized (libraryDexBuffers) {
+                libraryDexBuffers.add(bytes);
+            }
+            return true;
         } else {
-            outputResources.put(fixedName, bytes);
+            synchronized (outputResources) {
+                outputResources.put(fixedName, bytes);
+            }
             return true;
         }
     }
@@ -334,8 +481,10 @@ public class Main {
 
         try {
             ClassDefItem clazz =
-                CfTranslator.translate(name, bytes, args.cfOptions);
-            outputDex.add(clazz);
+                CfTranslator.translate(name, bytes, args.cfOptions, args.dexOptions);
+            synchronized (outputDex) {
+                outputDex.add(clazz);
+            }
             return true;
         } catch (ParseException ex) {
             DxConsole.err.println("\ntrouble processing:");
@@ -391,9 +540,8 @@ public class Main {
     }
 
     /**
-     * Converts {@link #outputDex} into a {@code byte[]}, write
-     * it out to the proper file (if any), and also do whatever human-oriented
-     * dumping is required.
+     * Converts {@link #outputDex} into a {@code byte[]} and do whatever
+     * human-oriented dumping is required.
      *
      * @return {@code null-ok;} the converted {@code byte[]} or {@code null}
      * if there was a problem
@@ -402,7 +550,6 @@ public class Main {
         byte[] outArray = null;
 
         try {
-            OutputStream out = null;
             OutputStream humanOutRaw = null;
             OutputStreamWriter humanOut = null;
             try {
@@ -425,11 +572,6 @@ public class Main {
                      * and write it, dump it, etc.
                      */
                     outArray = outputDex.toDex(humanOut, args.verboseDump);
-
-                    if ((args.outName != null) && !args.jarOutput) {
-                        out = openOutput(args.outName);
-                        out.write(outArray);
-                    }
                 }
 
                 if (args.statistics) {
@@ -439,7 +581,6 @@ public class Main {
                 if (humanOut != null) {
                     humanOut.flush();
                 }
-                closeOutput(out);
                 closeOutput(humanOutRaw);
             }
         } catch (Exception ex) {
@@ -460,8 +601,8 @@ public class Main {
      * Creates a jar file from the resources and given dex file array.
      *
      * @param fileName {@code non-null;} name of the file
-     * @param dexArray {@code non-null;} array containing the dex file
-     * to include
+     * @param dexArray array containing the dex file to include, or null if the
+     *     output contains no class defs.
      * @return whether the creation was successful
      */
     private static boolean createJar(String fileName, byte[] dexArray) {
@@ -476,7 +617,9 @@ public class Main {
             OutputStream out = openOutput(fileName);
             JarOutputStream jarOut = new JarOutputStream(out, manifest);
 
-            outputResources.put(DEX_IN_JAR_NAME, dexArray);
+            if (dexArray != null) {
+                outputResources.put(DexFormat.DEX_IN_JAR_NAME, dexArray);
+            }
 
             try {
                 for (Map.Entry<String, byte[]> e :
@@ -545,7 +688,7 @@ public class Main {
         createdBy += "dx " + Version.VERSION;
 
         attribs.put(CREATED_BY, createdBy);
-        attribs.putValue("Dex-Location", DEX_IN_JAR_NAME);
+        attribs.putValue("Dex-Location", DexFormat.DEX_IN_JAR_NAME);
 
         return manifest;
     }
@@ -686,7 +829,7 @@ public class Main {
              * The (default) source file is an attribute of the class, but
              * it's useful to see it in method dumps.
              */
-            CstUtf8 sourceFile = clazz.getSourceFile();
+            CstString sourceFile = clazz.getSourceFile();
             if (sourceFile != null) {
                 pw.println("  source file: " + sourceFile.toQuoted());
             }
@@ -775,13 +918,19 @@ public class Main {
          */
         public boolean keepClassesInJar = false;
 
+        /** what API level to target */
+        public int targetApiLevel = DexFormat.API_NO_EXTENDED_OPCODES;
+
         /** how much source position info to preserve */
         public int positionInfo = PositionList.LINES;
 
         /** whether to keep local variable information */
         public boolean localInfo = true;
 
-        /** {@code non-null after {@link #parse};} file name arguments */
+        /** whether to merge with the output dex file if it exists. */
+        public boolean incremental = false;
+
+        /** {@code non-null} after {@link #parse}; file name arguments */
         public String[] fileNames;
 
         /** whether to do SSA/register optimization */
@@ -796,8 +945,115 @@ public class Main {
         /** Whether to print statistics to stdout at end of compile cycle */
         public boolean statistics;
 
-        /** Options for dex.cf.* */
+        /** Options for class file transformation */
         public CfOptions cfOptions;
+
+        /** Options for dex file output */
+        public DexOptions dexOptions;
+
+        /** number of threads to run with */
+        public int numThreads = 1;
+
+        private static class ArgumentsParser {
+
+            /** The arguments to process. */
+            private final String[] arguments;
+            /** The index of the next argument to process. */
+            private int index;
+            /** The current argument being processed after a {@link #getNext()} call. */
+            private String current;
+            /** The last value of an argument processed by {@link #isArg(String)}. */
+            private String lastValue;
+
+            public ArgumentsParser(String[] arguments) {
+                this.arguments = arguments;
+                index = 0;
+            }
+
+            public String getCurrent() {
+                return current;
+            }
+
+            public String getLastValue() {
+                return lastValue;
+            }
+
+            /**
+             * Moves on to the next argument.
+             * Returns false when we ran out of arguments that start with --.
+             */
+            public boolean getNext() {
+                if (index >= arguments.length) {
+                    return false;
+                }
+                current = arguments[index];
+                if (current.equals("--") || !current.startsWith("--")) {
+                    return false;
+                }
+                index++;
+                return true;
+            }
+
+            /**
+             * Similar to {@link #getNext()}, this moves on the to next argument.
+             * It does not check however whether the argument starts with --
+             * and thus can be used to retrieve values.
+             */
+            private boolean getNextValue() {
+                if (index >= arguments.length) {
+                    return false;
+                }
+                current = arguments[index];
+                index++;
+                return true;
+            }
+
+            /**
+             * Returns all the arguments that have not been processed yet.
+             */
+            public String[] getRemaining() {
+                int n = arguments.length - index;
+                String[] remaining = new String[n];
+                if (n > 0) {
+                    System.arraycopy(arguments, index, remaining, 0, n);
+                }
+                return remaining;
+            }
+
+            /**
+             * Checks the current argument against the given prefix.
+             * If prefix is in the form '--name=', an extra value is expected.
+             * The argument can then be in the form '--name=value' or as a 2-argument
+             * form '--name value'.
+             */
+            public boolean isArg(String prefix) {
+                int n = prefix.length();
+                if (n > 0 && prefix.charAt(n-1) == '=') {
+                    // Argument accepts a value. Capture it.
+                    if (current.startsWith(prefix)) {
+                        // Argument is in the form --name=value, split the value out
+                        lastValue = current.substring(n);
+                        return true;
+                    } else {
+                        // Check whether we have "--name value" as 2 arguments
+                        prefix = prefix.substring(0, n-1);
+                        if (current.equals(prefix)) {
+                            if (getNextValue()) {
+                                lastValue = current;
+                                return true;
+                            } else {
+                                System.err.println("Missing value after parameter " + prefix);
+                                throw new UsageException();
+                            }
+                        }
+                        return false;
+                    }
+                } else {
+                    // Argument does not accept a value.
+                    return current.equals(prefix);
+                }
+            }
+        }
 
         /**
          * Parses the given command-line arguments.
@@ -805,51 +1061,46 @@ public class Main {
          * @param args {@code non-null;} the arguments
          */
         public void parse(String[] args) {
-            int at = 0;
+            ArgumentsParser parser = new ArgumentsParser(args);
 
-            for (/*at*/; at < args.length; at++) {
-                String arg = args[at];
-                if (arg.equals("--") || !arg.startsWith("--")) {
-                    break;
-                } else if (arg.equals("--debug")) {
+            while(parser.getNext()) {
+                if (parser.isArg("--debug")) {
                     debug = true;
-                } else if (arg.equals("--verbose")) {
+                } else if (parser.isArg("--verbose")) {
                     verbose = true;
-                } else if (arg.equals("--verbose-dump")) {
+                } else if (parser.isArg("--verbose-dump")) {
                     verboseDump = true;
-                } else if (arg.equals("--no-files")) {
+                } else if (parser.isArg("--no-files")) {
                     emptyOk = true;
-                } else if (arg.equals("--no-optimize")) {
+                } else if (parser.isArg("--no-optimize")) {
                     optimize = false;
-                } else if (arg.equals("--no-strict")) {
+                } else if (parser.isArg("--no-strict")) {
                     strictNameCheck = false;
-                } else if (arg.equals("--core-library")) {
+                } else if (parser.isArg("--core-library")) {
                     coreLibrary = true;
-                } else if (arg.equals("--statistics")) {
+                } else if (parser.isArg("--statistics")) {
                     statistics = true;
-                } else if (arg.startsWith("--optimize-list=")) {
+                } else if (parser.isArg("--optimize-list=")) {
                     if (dontOptimizeListFile != null) {
                         System.err.println("--optimize-list and "
                                 + "--no-optimize-list are incompatible.");
                         throw new UsageException();
                     }
                     optimize = true;
-                    optimizeListFile = arg.substring(arg.indexOf('=') + 1);
-                } else if (arg.startsWith("--no-optimize-list=")) {
+                    optimizeListFile = parser.getLastValue();
+                } else if (parser.isArg("--no-optimize-list=")) {
                     if (dontOptimizeListFile != null) {
                         System.err.println("--optimize-list and "
                                 + "--no-optimize-list are incompatible.");
                         throw new UsageException();
                     }
                     optimize = true;
-                    dontOptimizeListFile = arg.substring(arg.indexOf('=') + 1);
-                } else if (arg.equals("--keep-classes")) {
+                    dontOptimizeListFile = parser.getLastValue();
+                } else if (parser.isArg("--keep-classes")) {
                     keepClassesInJar = true;
-                } else if (arg.startsWith("--output=")) {
-                    outName = arg.substring(arg.indexOf('=') + 1);
-                    if (outName.endsWith(".zip") ||
-                            outName.endsWith(".jar") ||
-                            outName.endsWith(".apk")) {
+                } else if (parser.isArg("--output=")) {
+                    outName = parser.getLastValue();
+                    if (FileUtils.hasArchiveSuffix(outName)) {
                         jarOutput = true;
                     } else if (outName.endsWith(".dex") ||
                                outName.equals("-")) {
@@ -859,16 +1110,15 @@ public class Main {
                                            outName);
                         throw new UsageException();
                     }
-                } else if (arg.startsWith("--dump-to=")) {
-                    humanOutName = arg.substring(arg.indexOf('=') + 1);
-                } else if (arg.startsWith("--dump-width=")) {
-                    arg = arg.substring(arg.indexOf('=') + 1);
-                    dumpWidth = Integer.parseInt(arg);
-                } else if (arg.startsWith("--dump-method=")) {
-                    methodToDump = arg.substring(arg.indexOf('=') + 1);
+                } else if (parser.isArg("--dump-to=")) {
+                    humanOutName = parser.getLastValue();
+                } else if (parser.isArg("--dump-width=")) {
+                    dumpWidth = Integer.parseInt(parser.getLastValue());
+                } else if (parser.isArg("--dump-method=")) {
+                    methodToDump = parser.getLastValue();
                     jarOutput = false;
-                } else if (arg.startsWith("--positions=")) {
-                    String pstr = arg.substring(arg.indexOf('=') + 1).intern();
+                } else if (parser.isArg("--positions=")) {
+                    String pstr = parser.getLastValue().intern();
                     if (pstr == "none") {
                         positionInfo = PositionList.NONE;
                     } else if (pstr == "important") {
@@ -880,43 +1130,41 @@ public class Main {
                                            pstr);
                         throw new UsageException();
                     }
-                } else if (arg.equals("--no-locals")) {
+                } else if (parser.isArg("--no-locals")) {
                     localInfo = false;
+                } else if (parser.isArg("--num-threads=")) {
+                    numThreads = Integer.parseInt(parser.getLastValue());
+                } else if (parser.isArg("--incremental")) {
+                    incremental = true;
                 } else {
-                    System.err.println("unknown option: " + arg);
+                    System.err.println("unknown option: " + parser.getCurrent());
                     throw new UsageException();
                 }
             }
 
-            int fileCount = args.length - at;
-
-            if (fileCount == 0) {
+            fileNames = parser.getRemaining();
+            if (fileNames.length == 0) {
                 if (!emptyOk) {
                     System.err.println("no input files specified");
                     throw new UsageException();
                 }
             } else if (emptyOk) {
                 System.out.println("ignoring input files");
-                at = 0;
-                fileCount = 0;
             }
-
-            fileNames = new String[fileCount];
-            System.arraycopy(args, at, fileNames, 0, fileCount);
 
             if ((humanOutName == null) && (methodToDump != null)) {
                 humanOutName = "-";
             }
 
-            makeCfOptions();
+            makeOptionsObjects();
         }
 
         /**
-         * Copies relevent arguments over into a CfOptions instance.
+         * Copies relevent arguments over into CfOptions and
+         * DexOptions instances.
          */
-        private void makeCfOptions() {
+        private void makeOptionsObjects() {
             cfOptions = new CfOptions();
-
             cfOptions.positionInfo = positionInfo;
             cfOptions.localInfo = localInfo;
             cfOptions.strictNameCheck = strictNameCheck;
@@ -925,6 +1173,40 @@ public class Main {
             cfOptions.dontOptimizeListFile = dontOptimizeListFile;
             cfOptions.statistics = statistics;
             cfOptions.warn = DxConsole.err;
+
+            dexOptions = new DexOptions();
+            dexOptions.targetApiLevel = targetApiLevel;
+        }
+    }
+
+    /** Runnable helper class to process files in multiple threads */
+    private static class ParallelProcessor implements Runnable {
+
+        String path;
+        long lastModified;
+        byte[] bytes;
+
+        /**
+         * Constructs an instance.
+         *
+         * @param path {@code non-null;} filename of element. May not be a valid
+         * filesystem path.
+         * @param bytes {@code non-null;} file data
+         */
+        private ParallelProcessor(String path, long lastModified, byte bytes[]) {
+            this.path = path;
+            this.lastModified = lastModified;
+            this.bytes = bytes;
+        }
+
+        /**
+         * Task run by each thread in the thread pool. Runs processFileBytes
+         * with the given path and bytes.
+         */
+        public void run() {
+            if (Main.processFileBytes(path, lastModified, bytes)) {
+                anyFilesProcessed = true;
+            }
         }
     }
 }

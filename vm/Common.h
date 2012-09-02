@@ -17,104 +17,18 @@
 /*
  * Common defines for all Dalvik code.
  */
-#ifndef _DALVIK_COMMON
-#define _DALVIK_COMMON
+#ifndef DALVIK_COMMON_H_
+#define DALVIK_COMMON_H_
 
 #ifndef LOG_TAG
 # define LOG_TAG "dalvikvm"
 #endif
 
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
-
-#if !defined(NDEBUG) && defined(WITH_DALVIK_ASSERT)
-# undef assert
-# define assert(x) \
-    ((x) ? ((void)0) : (LOGE("ASSERT FAILED (%s:%d): %s\n", \
-        __FILE__, __LINE__, #x), *(int*)39=39, 0) )
-#endif
-
-#define MIN(x,y) (((x) < (y)) ? (x) : (y))
-#define MAX(x,y) (((x) > (y)) ? (x) : (y))
-
-#define LIKELY(exp) (__builtin_expect((exp) != 0, true))
-#define UNLIKELY(exp) (__builtin_expect((exp) != 0, false))
-
-/*
- * If "very verbose" logging is enabled, make it equivalent to LOGV.
- * Otherwise, make it disappear.
- *
- * Define this above the #include "Dalvik.h" to enable for only a
- * single file.
- */
-/* #define VERY_VERBOSE_LOG */
-#if defined(VERY_VERBOSE_LOG)
-# define LOGVV      LOGV
-# define IF_LOGVV() IF_LOGV()
-#else
-# define LOGVV(...) ((void)0)
-# define IF_LOGVV() if (false)
-#endif
-
-
-/*
- * These match the definitions in the VM specification.
- */
-#ifdef HAVE_STDINT_H
-# include <stdint.h>    /* C99 */
-typedef uint8_t             u1;
-typedef uint16_t            u2;
-typedef uint32_t            u4;
-typedef uint64_t            u8;
-typedef int8_t              s1;
-typedef int16_t             s2;
-typedef int32_t             s4;
-typedef int64_t             s8;
-#else
-typedef unsigned char       u1;
-typedef unsigned short      u2;
-typedef unsigned int        u4;
-typedef unsigned long long  u8;
-typedef signed char         s1;
-typedef signed short        s2;
-typedef signed int          s4;
-typedef signed long long    s8;
-#endif
-
-/*
- * Storage for primitive types and object references.
- *
- * Some parts of the code (notably object field access) assume that values
- * are "left aligned", i.e. given "JValue jv", "jv.i" and "*((s4*)&jv)"
- * yield the same result.  This seems to be guaranteed by gcc on big- and
- * little-endian systems.
- */
-typedef union JValue {
-    u1      z;
-    s1      b;
-    u2      c;
-    s2      s;
-    s4      i;
-    s8      j;
-    float   f;
-    double  d;
-    void*   l;
-} JValue;
-
-/*
- * The <stdbool.h> definition uses _Bool, a type known to the compiler.
- */
-#ifdef HAVE_STDBOOL_H
-# include <stdbool.h>   /* C99 */
-#else
-# ifndef __bool_true_false_are_defined
-typedef enum { false=0, true=!false } bool;
-# define __bool_true_false_are_defined 1
-# endif
-#endif
-
-#define NELEM(x) ((int) (sizeof(x) / sizeof((x)[0])))
-
+#include "cutils/log.h"
 
 #if defined(HAVE_ENDIAN_H)
 # include <endian.h>
@@ -128,28 +42,82 @@ typedef enum { false=0, true=!false } bool;
 # endif
 #endif /*not HAVE_ENDIAN_H*/
 
-
-#if 0
-/*
- * Pretend we have the Android logging macros.  These are replaced by the
- * Android logging implementation.
- */
-#define ANDROID_LOG_DEBUG 3
-#define LOGV(...)    LOG_PRI(2, 0, __VA_ARGS__)
-#define LOGD(...)    LOG_PRI(3, 0, __VA_ARGS__)
-#define LOGI(...)    LOG_PRI(4, 0, __VA_ARGS__)
-#define LOGW(...)    LOG_PRI(5, 0, __VA_ARGS__)
-#define LOGE(...)    LOG_PRI(6, 0, __VA_ARGS__)
-#define MIN_LOG_LEVEL   2
-
-#define LOG_PRI(priority, tag, ...) do {                            \
-        if (priority >= MIN_LOG_LEVEL) {                            \
-            dvmFprintf(stdout, "%s:%-4d ", __FILE__, __LINE__);     \
-            dvmFprintf(stdout, __VA_ARGS__);                        \
-        }                                                           \
-    } while(0)
-#else
-# include "utils/Log.h"
+#if !defined(NDEBUG) && defined(WITH_DALVIK_ASSERT)
+# undef assert
+# define assert(x) \
+    ((x) ? ((void)0) : (ALOGE("ASSERT FAILED (%s:%d): %s", \
+        __FILE__, __LINE__, #x), *(int*)39=39, (void)0) )
 #endif
 
-#endif /*_DALVIK_COMMON*/
+#define MIN(x,y) (((x) < (y)) ? (x) : (y))
+#define MAX(x,y) (((x) > (y)) ? (x) : (y))
+
+#define LIKELY(exp) (__builtin_expect((exp) != 0, true))
+#define UNLIKELY(exp) (__builtin_expect((exp) != 0, false))
+
+#define ALIGN_UP(x, n) (((size_t)(x) + (n) - 1) & ~((n) - 1))
+#define ALIGN_DOWN(x, n) ((size_t)(x) & -(n))
+#define ALIGN_UP_TO_PAGE_SIZE(p) ALIGN_UP(p, SYSTEM_PAGE_SIZE)
+#define ALIGN_DOWN_TO_PAGE_SIZE(p) ALIGN_DOWN(p, SYSTEM_PAGE_SIZE)
+
+#define CLZ(x) __builtin_clz(x)
+
+/*
+ * If "very verbose" logging is enabled, make it equivalent to ALOGV.
+ * Otherwise, make it disappear.
+ *
+ * Define this above the #include "Dalvik.h" to enable for only a
+ * single file.
+ */
+/* #define VERY_VERBOSE_LOG */
+#if defined(VERY_VERBOSE_LOG)
+# define LOGVV      ALOGV
+# define IF_LOGVV() IF_ALOGV()
+#else
+# define LOGVV(...) ((void)0)
+# define IF_LOGVV() if (false)
+#endif
+
+
+/*
+ * These match the definitions in the VM specification.
+ */
+typedef uint8_t             u1;
+typedef uint16_t            u2;
+typedef uint32_t            u4;
+typedef uint64_t            u8;
+typedef int8_t              s1;
+typedef int16_t             s2;
+typedef int32_t             s4;
+typedef int64_t             s8;
+
+/*
+ * Storage for primitive types and object references.
+ *
+ * Some parts of the code (notably object field access) assume that values
+ * are "left aligned", i.e. given "JValue jv", "jv.i" and "*((s4*)&jv)"
+ * yield the same result.  This seems to be guaranteed by gcc on big- and
+ * little-endian systems.
+ */
+struct Object;
+
+union JValue {
+    u1      z;
+    s1      b;
+    u2      c;
+    s2      s;
+    s4      i;
+    s8      j;
+    float   f;
+    double  d;
+    Object* l;
+};
+
+#define OFFSETOF_MEMBER(t, f)         \
+  (reinterpret_cast<char*>(           \
+     &reinterpret_cast<t*>(16)->f) -  \
+   reinterpret_cast<char*>(16))
+
+#define NELEM(x) ((int) (sizeof(x) / sizeof((x)[0])))
+
+#endif  // DALVIK_COMMON_H_

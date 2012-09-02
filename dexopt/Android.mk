@@ -19,7 +19,7 @@
 LOCAL_PATH:= $(call my-dir)
 
 local_src_files := \
-		OptMain.c
+		OptMain.cpp
 
 local_c_includes := \
 		dalvik \
@@ -40,11 +40,16 @@ ifeq ($(TARGET_CPU_SMP),true)
 else
     LOCAL_CFLAGS += -DANDROID_SMP=0
 endif
+
 LOCAL_SRC_FILES := $(local_src_files)
 LOCAL_C_INCLUDES := $(local_c_includes)
-LOCAL_SHARED_LIBRARIES := $(local_shared_libraries) libcutils libexpat liblog libnativehelper libutils libz
+LOCAL_SHARED_LIBRARIES := $(local_shared_libraries) libcutils libexpat liblog libz
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE := dexopt
+
+LOCAL_C_INCLUDES += external/stlport/stlport bionic/ bionic/libstdc++/include
+LOCAL_SHARED_LIBRARIES += libstlport
+
 include $(BUILD_EXECUTABLE)
 
 ifeq ($(WITH_HOST_DALVIK),true)
@@ -52,7 +57,7 @@ ifeq ($(WITH_HOST_DALVIK),true)
     LOCAL_SRC_FILES := $(local_src_files)
     LOCAL_C_INCLUDES := $(local_c_includes)
     LOCAL_SHARED_LIBRARIES := $(local_shared_libraries)
-    LOCAL_STATIC_LIBRARIES :=  libcutils libexpat liblog libnativehelper libutils libz
+    LOCAL_STATIC_LIBRARIES :=  libcutils libexpat liblog libz
     LOCAL_LDLIBS += -ldl -lpthread
     LOCAL_CFLAGS += -DANDROID_SMP=1
     LOCAL_MODULE_TAGS := optional

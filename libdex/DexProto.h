@@ -18,8 +18,8 @@
  * Functions for dealing with method prototypes
  */
 
-#ifndef _LIBDEX_DEXPROTO
-#define _LIBDEX_DEXPROTO
+#ifndef LIBDEX_DEXPROTO_H_
+#define LIBDEX_DEXPROTO_H_
 
 #include "DexFile.h"
 
@@ -30,11 +30,17 @@
  * generally return a string that is valid until the next
  * time the same DexStringCache is used.
  */
-typedef struct DexStringCache {
+struct DexStringCache {
     char* value;          /* the latest value */
     size_t allocatedSize; /* size of the allocated buffer, if allocated */
     char buffer[120];     /* buffer used to hold small-enough results */
-} DexStringCache;
+};
+
+/*
+ * Make sure that the given cache can hold a string of the given length,
+ * including the final '\0' byte.
+ */
+void dexStringCacheAlloc(DexStringCache* pCache, size_t length);
 
 /*
  * Initialize the given DexStringCache. Use this function before passing
@@ -70,10 +76,10 @@ char* dexStringCacheAbandon(DexStringCache* pCache, const char* value);
  * Method prototype structure, which refers to a protoIdx in a
  * particular DexFile.
  */
-typedef struct DexProto {
+struct DexProto {
     const DexFile* dexFile;     /* file the idx refers to */
     u4 protoIdx;                /* index into proto_ids table of dexFile */
-} DexProto;
+};
 
 /*
  * Set the given DexProto to refer to the prototype of the given MethodId.
@@ -165,13 +171,14 @@ int dexProtoComputeArgsSize(const DexProto* pProto);
 int dexProtoCompare(const DexProto* pProto1, const DexProto* pProto2);
 
 /*
- * Compare the two prototypes. The two prototypes are compared
- * with the first argument as the major order, then second, etc. If two
- * prototypes are identical except that one has extra arguments, then the
- * shorter argument is considered the earlier one in sort order (similar
- * to strcmp()).
+ * Compare the two prototypes, ignoring return type. The two
+ * prototypes are compared with the first argument as the major order,
+ * then second, etc. If two prototypes are identical except that one
+ * has extra arguments, then the shorter argument is considered the
+ * earlier one in sort order (similar to strcmp()).
  */
-int dexProtoCompareParameters(const DexProto* pProto1, const DexProto* pProto2);
+int dexProtoCompareParameters(const DexProto* pProto1,
+        const DexProto* pProto2);
 
 /*
  * Compare a prototype and a string method descriptor. The comparison
@@ -181,15 +188,23 @@ int dexProtoCompareParameters(const DexProto* pProto1, const DexProto* pProto2);
 int dexProtoCompareToDescriptor(const DexProto* proto, const char* descriptor);
 
 /*
+ * Compare a prototype and a concatenation of type descriptors. The
+ * comparison is done as if the descriptors were converted to a
+ * prototype and compared with dexProtoCompareParameters().
+ */
+int dexProtoCompareToParameterDescriptors(const DexProto* proto,
+        const char* descriptors);
+
+/*
  * Single-thread prototype parameter iterator. This structure holds a
  * pointer to a prototype and its parts, along with a cursor.
  */
-typedef struct DexParameterIterator {
+struct DexParameterIterator {
     const DexProto* proto;
     const DexTypeList* parameters;
     int parameterCount;
     int cursor;
-} DexParameterIterator;
+};
 
 /*
  * Initialize the given DexParameterIterator to be at the start of the
@@ -211,6 +226,4 @@ u4 dexParameterIteratorNextIndex(DexParameterIterator* pIterator);
 const char* dexParameterIteratorNextDescriptor(
         DexParameterIterator* pIterator);
 
-
-
-#endif /*_LIBDEX_DEXPROTO*/
+#endif  // LIBDEX_DEXPROTO_H_

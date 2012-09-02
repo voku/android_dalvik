@@ -17,12 +17,13 @@
 package com.android.dx.dex.code.form;
 
 import com.android.dx.dex.code.DalvInsn;
-import com.android.dx.dex.code.HighRegisterPrefix;
 import com.android.dx.dex.code.InsnFormat;
 import com.android.dx.dex.code.SimpleInsn;
 import com.android.dx.rop.code.RegisterSpec;
 import com.android.dx.rop.code.RegisterSpecList;
 import com.android.dx.util.AnnotatedOutput;
+
+import java.util.BitSet;
 
 /**
  * Instruction format {@code 12x}. See the instruction format spec
@@ -109,8 +110,13 @@ public final class Form12x extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return Form22x.THE_ONE;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        BitSet bits = new BitSet(2);
+
+        bits.set(0, unsignedFitsInNibble(regs.get(0).getReg()));
+        bits.set(1, unsignedFitsInNibble(regs.get(1).getReg()));
+        return bits;
     }
 
     /** {@inheritDoc} */

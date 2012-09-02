@@ -16,12 +16,12 @@
 
 /*
  * Maintain a table of references.  Used for internal local references,
- * JNI locals, JNI globals, and GC heap references.
+ * JNI monitor references, and JNI pinned array references.
  *
  * None of the table functions are synchronized.
  */
-#ifndef _DALVIK_REFERENCETABLE
-#define _DALVIK_REFERENCETABLE
+#ifndef DALVIK_REFERENCETABLE_H_
+#define DALVIK_REFERENCETABLE_H_
 
 /*
  * Table definition.
@@ -36,13 +36,13 @@
  * (This structure is still somewhat transparent; direct access to
  * table/nextEntry is allowed.)
  */
-typedef struct ReferenceTable {
+struct ReferenceTable {
     Object**        nextEntry;          /* top of the list */
     Object**        table;              /* bottom of the list */
 
     int             allocEntries;       /* #of entries we have space for */
     int             maxEntries;         /* max #of entries allowed */
-} ReferenceTable;
+};
 
 /*
  * Initialize a ReferenceTable.
@@ -111,7 +111,15 @@ bool dvmRemoveFromReferenceTable(ReferenceTable* pRef, Object** bottom,
 
 /*
  * Dump the contents of a reference table to the log file.
+ *
+ * The caller should lock any external sync before calling.
  */
 void dvmDumpReferenceTable(const ReferenceTable* pRef, const char* descr);
 
-#endif /*_DALVIK_REFERENCETABLE*/
+/*
+ * Internal function, shared with IndirectRefTable.
+ */
+void dvmDumpReferenceTableContents(Object* const* refs, size_t count,
+    const char* descr);
+
+#endif  // DALVIK_REFERENCETABLE_H_

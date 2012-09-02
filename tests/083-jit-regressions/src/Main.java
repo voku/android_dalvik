@@ -24,6 +24,8 @@ public class Main {
         b2296099Test();
         b2302318Test();
         b2487514Test();
+        b5884080Test();
+        zeroTest();
     }
 
     static void b2296099Test() throws Exception {
@@ -103,6 +105,39 @@ public class Main {
         else {
             System.out.println("b2487514 fails: catchCount is " + catchCount +
                                " (expecting 1000)");
+        }
+    }
+
+    static void b5884080Test() {
+        int vA = 1;
+
+        int l = 0;
+        do {
+            int k = 0;
+            do
+                vA += 1;
+            while(++k < 100);
+        } while (++l < 1000);
+        if (vA == 100001) {
+            System.out.println("b5884080 passes");
+        }
+        else {
+            System.out.println("b5884080 fails: vA is " + vA +
+                               " (expecting 100001)");
+        }
+    }
+
+    static void zeroTest() throws Exception {
+        ZeroTests zt = new ZeroTests();
+        try {
+            zt.longDivTest();
+        } catch (Throwable th) {
+            th.printStackTrace();
+        }
+        try {
+            zt.longModTest();
+        } catch (Throwable th) {
+            th.printStackTrace();
         }
     }
 }

@@ -16,6 +16,8 @@
 
 package com.android.dx.dex.code;
 
+import com.android.dx.dex.DexOptions;
+import com.android.dx.io.Opcodes;
 import com.android.dx.rop.code.LocalItem;
 import com.android.dx.rop.code.RegisterSpec;
 import com.android.dx.rop.code.RegisterSpecList;
@@ -24,10 +26,12 @@ import com.android.dx.rop.code.SourcePosition;
 import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstMemberRef;
 import com.android.dx.rop.cst.CstType;
-import com.android.dx.rop.cst.CstUtf8;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.type.Type;
 
+import com.android.dx.util.DexException;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashSet;
 
 /**
@@ -36,6 +40,9 @@ import java.util.HashSet;
  * form of a {@link DalvInsnList} instance.
  */
 public final class OutputFinisher {
+    /** {@code non-null;} options for dex output */
+    private final DexOptions dexOptions;
+
     /**
      * {@code >= 0;} register count for the method, not including any extra
      * "reserved" registers needed to translate "difficult" instructions
@@ -62,11 +69,13 @@ public final class OutputFinisher {
     /**
      * Constructs an instance. It initially contains no instructions.
      *
+     * @param dexOptions {@code non-null;} options for dex output
      * @param regCount {@code >= 0;} register count for the method
-     * @param initialCapacity {@code >= 0;} initial capacity of the instructions
-     * list
+     * @param initialCapacity {@code >= 0;} initial capacity of the
+     * instructions list
      */
-    public OutputFinisher(int initialCapacity, int regCount) {
+    public OutputFinisher(DexOptions dexOptions, int initialCapacity, int regCount) {
+        this.dexOptions = dexOptions;
         this.unreservedRegCount = regCount;
         this.insns = new ArrayList<DalvInsn>(initialCapacity);
         this.reservedCount = -1;
@@ -188,8 +197,8 @@ public final class OutputFinisher {
         }
 
         LocalItem local = spec.getLocalItem();
-        CstUtf8 name = local.getName();
-        CstUtf8 signature = local.getSignature();
+        CstString name = local.getName();
+        CstString signature = local.getSignature();
         Type type = spec.getType();
 
         if (type != Type.KNOWN_NULL) {
@@ -255,7 +264,8 @@ public final class OutputFinisher {
      * @param which how many instructions back to find the branch;
      * {@code 0} is the most recently added instruction,
      * {@code 1} is the instruction before that, etc.
-     * @param newTarget {@code non-null;} the new target for the reversed branch
+     * @param newTarget {@code non-null;} the new target for the
+     * reversed branch
      */
     public void reverseBranch(int which, CodeAddress newTarget) {
         int size = insns.size();
@@ -345,9 +355,9 @@ public final class OutputFinisher {
             throw new UnsupportedOperationException("already processed");
         }
 
-        InsnFormat[] formats = makeFormatsArray();
-        reserveRegisters(formats);
-        massageInstructions(formats);
+        Dop[] opcodes = makeOpcodesArray();
+        reserveRegisters(opcodes);
+        massageInstructions(opcodes);
         assignAddressesAndFixBranches();
 
         return DalvInsnList.makeImmutable(insns,
@@ -356,17 +366,17 @@ public final class OutputFinisher {
 
     /**
      * Helper for {@link #finishProcessingAndGetList}, which extracts
-     * the format out of each instruction into a separate array, to be
+     * the opcode out of each instruction into a separate array, to be
      * further manipulated as things progress.
      *
-     * @return {@code non-null;} the array of formats
+     * @return {@code non-null;} the array of opcodes
      */
-    private InsnFormat[] makeFormatsArray() {
+    private Dop[] makeOpcodesArray() {
         int size = insns.size();
-        InsnFormat[] result = new InsnFormat[size];
+        Dop[] result = new Dop[size];
 
         for (int i = 0; i < size; i++) {
-            result[i] = insns.get(i).getOpcode().getFormat();
+            result[i] = insns.get(i).getOpcode();
         }
 
         return result;
@@ -375,13 +385,14 @@ public final class OutputFinisher {
     /**
      * Helper for {@link #finishProcessingAndGetList}, which figures
      * out how many reserved registers are required and then reserving
-     * them. It also updates the given {@code formats} array so
+     * them. It also updates the given {@code opcodes} array so
      * as to avoid extra work when constructing the massaged
      * instruction list.
      *
-     * @param formats {@code non-null;} array of per-instruction format selections
+     * @param opcodes {@code non-null;} array of per-instruction
+     * opcode selections
      */
-    private void reserveRegisters(InsnFormat[] formats) {
+    private void reserveRegisters(Dop[] opcodes) {
         int oldReservedCount = (reservedCount < 0) ? 0 : reservedCount;
 
         /*
@@ -389,7 +400,7 @@ public final class OutputFinisher {
          * reservation, repeatedly until no new reservations happen.
          */
         for (;;) {
-            int newReservedCount = calculateReservedCount(formats);
+            int newReservedCount = calculateReservedCount(opcodes);
             if (oldReservedCount >= newReservedCount) {
                 break;
             }
@@ -425,13 +436,14 @@ public final class OutputFinisher {
      * Helper for {@link #reserveRegisters}, which does one
      * pass over the instructions, calculating the number of
      * registers that need to be reserved. It also updates the
-     * {@code formats} list to help avoid extra work in future
+     * {@code opcodes} list to help avoid extra work in future
      * register reservation passes.
      *
-     * @param formats {@code non-null;} array of per-instruction format selections
+     * @param opcodes {@code non-null;} array of per-instruction
+     * opcode selections
      * @return {@code >= 0;} the count of reserved registers
      */
-    private int calculateReservedCount(InsnFormat[] formats) {
+    private int calculateReservedCount(Dop[] opcodes) {
         int size = insns.size();
 
         /*
@@ -444,68 +456,76 @@ public final class OutputFinisher {
 
         for (int i = 0; i < size; i++) {
             DalvInsn insn = insns.get(i);
-            InsnFormat originalFormat = formats[i];
-            InsnFormat newFormat = findFormatForInsn(insn, originalFormat);
+            Dop originalOpcode = opcodes[i];
+            Dop newOpcode = findOpcodeForInsn(insn, originalOpcode);
 
-            if (originalFormat == newFormat) {
-                continue;
-            }
-
-            if (newFormat == null) {
+            if (newOpcode == null) {
                 /*
-                 * The instruction will need to be expanded, so reserve
-                 * registers for it.
+                 * The instruction will need to be expanded, so find the
+                 * expanded opcode and reserve registers for it.
                  */
-                int reserve = insn.getMinimumRegisterRequirement();
+                Dop expandedOp = findExpandedOpcodeForInsn(insn);
+                BitSet compatRegs = expandedOp.getFormat().compatibleRegs(insn);
+                int reserve = insn.getMinimumRegisterRequirement(compatRegs);
                 if (reserve > newReservedCount) {
                     newReservedCount = reserve;
                 }
+            } else if (originalOpcode == newOpcode) {
+                continue;
             }
 
-            formats[i] = newFormat;
+            opcodes[i] = newOpcode;
         }
 
         return newReservedCount;
     }
 
     /**
-     * Attempts to fit the given instruction into a format, returning
-     * either a format that the instruction fits into or {@code null}
-     * to indicate that the instruction will need to be expanded. This
-     * fitting process starts with the given format as a first "best
-     * guess" and then pessimizes from there if necessary.
+     * Attempts to fit the given instruction into a specific opcode,
+     * returning the opcode whose format that the instruction fits
+     * into or {@code null} to indicate that the instruction will need
+     * to be expanded. This fitting process starts with the given
+     * opcode as a first "best guess" and then pessimizes from there
+     * if necessary.
      *
      * @param insn {@code non-null;} the instruction in question
-     * @param format {@code null-ok;} the current guess as to the best instruction
-     * format to use; {@code null} means that no simple format fits
-     * @return {@code null-ok;} a possibly-different format, which is either a
-     * good fit or {@code null} to indicate that no simple format
-     * fits
+     * @param guess {@code null-ok;} the current guess as to the best
+     * opcode; {@code null} means that no simple opcode fits
+     * @return {@code null-ok;} a possibly-different opcode; either a
+     * {@code non-null} good fit or {@code null} to indicate that no
+     * simple opcode fits
      */
-    private InsnFormat findFormatForInsn(DalvInsn insn, InsnFormat format) {
-        if (format == null) {
-            // The instruction is already known not to fit any simple format.
-            return format;
-        }
+    private Dop findOpcodeForInsn(DalvInsn insn, Dop guess) {
+        /*
+         * Note: The initial guess might be null, meaning that an
+         * earlier call to this method already determined that there
+         * was no possible simple opcode fit.
+         */
 
-        if (format.isCompatible(insn)) {
-            // The instruction already fits in the current best-known format.
-            return format;
-        }
-
-        Dop dop = insn.getOpcode();
-        int family = dop.getFamily();
-
-        for (;;) {
-            format = format.nextUp();
-            if ((format == null) ||
-                    (format.isCompatible(insn) &&
-                     (Dops.getOrNull(family, format) != null))) {
+        while (guess != null) {
+            if (guess.getFormat().isCompatible(insn)) {
                 break;
             }
+
+            guess = Dops.getNextOrNull(guess, dexOptions);
         }
 
-        return format;
+        return guess;
+    }
+
+    /**
+     * Finds the proper opcode for the given instruction, ignoring
+     * register constraints.
+     *
+     * @param insn {@code non-null;} the instruction in question
+     * @return {@code non-null;} the opcode that fits
+     */
+    private Dop findExpandedOpcodeForInsn(DalvInsn insn) {
+        Dop result = findOpcodeForInsn(insn.getLowRegVersion(), insn.getOpcode());
+        if (result == null) {
+            throw new DexException("No expanded opcode for " + insn);
+        }
+        return result;
     }
 
     /**
@@ -527,27 +547,27 @@ public final class OutputFinisher {
      * final addresses aren't known at the point that this method is
      * called.</p>
      *
-     * @param formats {@code non-null;} array of per-instruction format selections
+     * @param opcodes {@code non-null;} array of per-instruction
+     * opcode selections
      */
-    private void massageInstructions(InsnFormat[] formats) {
+    private void massageInstructions(Dop[] opcodes) {
         if (reservedCount == 0) {
             /*
              * The easy common case: No registers were reserved, so we
-             * merely need to replace any instructions whose format changed
-             * during the reservation pass, but all instructions will stay
-             * at their original indices, and the instruction list doesn't
-             * grow.
+             * merely need to replace any instructions whose format
+             * (and hence whose opcode) changed during the reservation
+             * pass, but all instructions will stay at their original
+             * indices, and the instruction list doesn't grow.
              */
             int size = insns.size();
 
             for (int i = 0; i < size; i++) {
                 DalvInsn insn = insns.get(i);
-                Dop dop = insn.getOpcode();
-                InsnFormat format = formats[i];
+                Dop originalOpcode = insn.getOpcode();
+                Dop currentOpcode = opcodes[i];
 
-                if (format != dop.getFormat()) {
-                    dop = Dops.getOrNull(dop.getFamily(), format);
-                    insns.set(i, insn.withOpcode(dop));
+                if (originalOpcode != currentOpcode) {
+                    insns.set(i, insn.withOpcode(currentOpcode));
                 }
             }
         } else {
@@ -555,7 +575,7 @@ public final class OutputFinisher {
              * The difficult uncommon case: Some instructions have to be
              * expanded to deal with high registers.
              */
-            insns = performExpansion(formats);
+            insns = performExpansion(opcodes);
         }
     }
 
@@ -566,46 +586,43 @@ public final class OutputFinisher {
      * problems) is expanded into a series of instances that together
      * perform the proper function.
      *
-     * @param formats {@code non-null;} array of per-instruction format selections
+     * @param opcodes {@code non-null;} array of per-instruction
+     * opcode selections
      * @return {@code non-null;} the replacement list
      */
-    private ArrayList<DalvInsn> performExpansion(InsnFormat[] formats) {
+    private ArrayList<DalvInsn> performExpansion(Dop[] opcodes) {
         int size = insns.size();
         ArrayList<DalvInsn> result = new ArrayList<DalvInsn>(size * 2);
 
         for (int i = 0; i < size; i++) {
             DalvInsn insn = insns.get(i);
-            Dop dop = insn.getOpcode();
-            InsnFormat originalFormat = dop.getFormat();
-            InsnFormat currentFormat = formats[i];
+            Dop originalOpcode = insn.getOpcode();
+            Dop currentOpcode = opcodes[i];
             DalvInsn prefix;
             DalvInsn suffix;
 
-            if (currentFormat != null) {
+            if (currentOpcode != null) {
                 // No expansion is necessary.
                 prefix = null;
                 suffix = null;
             } else {
                 // Expansion is required.
-                prefix = insn.hrPrefix();
-                suffix = insn.hrSuffix();
+                currentOpcode = findExpandedOpcodeForInsn(insn);
+                BitSet compatRegs =
+                    currentOpcode.getFormat().compatibleRegs(insn);
+                prefix = insn.expandedPrefix(compatRegs);
+                suffix = insn.expandedSuffix(compatRegs);
 
-                /*
-                 * Get the initial guess as to the hr version, but then
-                 * let findFormatForInsn() pick a better format, if any.
-                 */
-                insn = insn.hrVersion();
-                originalFormat = insn.getOpcode().getFormat();
-                currentFormat = findFormatForInsn(insn, originalFormat);
+                // Expand necessary registers to fit the new format
+                insn = insn.expandedVersion(compatRegs);
             }
 
             if (prefix != null) {
                 result.add(prefix);
             }
 
-            if (currentFormat != originalFormat) {
-                dop = Dops.getOrNull(dop.getFamily(), currentFormat);
-                insn = insn.withOpcode(dop);
+            if (currentOpcode != originalOpcode) {
+                insn = insn.withOpcode(currentOpcode);
             }
             result.add(insn);
 
@@ -669,18 +686,17 @@ public final class OutputFinisher {
                 continue;
             }
 
-            Dop dop = insn.getOpcode();
-            InsnFormat format = dop.getFormat();
+            Dop opcode = insn.getOpcode();
             TargetInsn target = (TargetInsn) insn;
 
-            if (format.branchFits(target)) {
+            if (opcode.getFormat().branchFits(target)) {
                 continue;
             }
 
-            if (dop.getFamily() == DalvOps.GOTO) {
+            if (opcode.getFamily() == Opcodes.GOTO) {
                 // It is a goto; widen it if possible.
-                InsnFormat newFormat = findFormatForInsn(insn, format);
-                if (newFormat == null) {
+                opcode = findOpcodeForInsn(insn, opcode);
+                if (opcode == null) {
                     /*
                      * The branch is already maximally large. This should
                      * only be possible if a method somehow manages to have
@@ -688,9 +704,7 @@ public final class OutputFinisher {
                      */
                     throw new UnsupportedOperationException("method too long");
                 }
-                dop = Dops.getOrNull(dop.getFamily(), newFormat);
-                insn = insn.withOpcode(dop);
-                insns.set(i, insn);
+                insns.set(i, insn.withOpcode(opcode));
             } else {
                 /*
                  * It is a conditional: Reverse its sense, and arrange for

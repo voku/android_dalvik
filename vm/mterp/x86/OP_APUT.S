@@ -1,4 +1,4 @@
-%default { "reg":"%ecx", "store":"movl", "shift":"4" }
+%default { "reg":"rINST", "store":"movl", "shift":"4" }
 %verify "executed"
     /*
      * Array put, 32 bits or less.  vBB[vCC] <- vAA
@@ -8,16 +8,18 @@
     /* op vAA, vBB, vCC */
     movzbl    2(rPC),%eax               # eax<- BB
     movzbl    3(rPC),%ecx               # ecx<- CC
-    movzbl    rINST_HI,rINST_FULL       # rINST_FULL<- AA
-    GET_VREG(%eax,%eax)                 # eax<- vBB (array object)
-    GET_VREG(%ecx,%ecx)                 # ecs<- vCC (requested index)
+    GET_VREG_R  %eax %eax               # eax<- vBB (array object)
+    GET_VREG_R  %ecx %ecx               # ecs<- vCC (requested index)
     testl     %eax,%eax                 # null array object?
     je        common_errNullObject      # bail if so
     cmpl      offArrayObject_length(%eax),%ecx
-    jae       common_errArrayIndex      # index >= length, bail
+    jae       common_errArrayIndex      # index >= length, bail.  Expects:
+                                        #   arrayObj in eax
+                                        #   index in ecx
     leal      offArrayObject_contents(%eax,%ecx,$shift),%eax
-    GET_VREG(%ecx,rINST_FULL)
-    FETCH_INST_WORD(2)
+.L${opcode}_finish:
+    GET_VREG_R  rINST rINST
+    FETCH_INST_OPCODE 2 %ecx
     $store     $reg,(%eax)
-    ADVANCE_PC(2)
-    GOTO_NEXT
+    ADVANCE_PC 2
+    GOTO_NEXT_R %ecx

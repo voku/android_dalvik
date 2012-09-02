@@ -13,15 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 /*
  * Inlined native functions.
  */
-#ifndef _DALVIK_INLINENATIVE
-#define _DALVIK_INLINENATIVE
+#ifndef DALVIK_INLINENATIVE_H_
+#define DALVIK_INLINENATIVE_H_
 
 /* startup/shutdown */
 bool dvmInlineNativeStartup(void);
 void dvmInlineNativeShutdown(void);
+
+Method* dvmFindInlinableMethod(const char* classDescriptor,
+    const char* methodName, const char* methodSignature);
 
 /*
  * Basic 4-argument inline operation handler.
@@ -41,15 +45,19 @@ typedef bool (*InlineOp4Func)(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
  * generate assembly code that knows how many args it needs and has the
  * target address embedded.
  */
-typedef struct InlineOperation {
+struct InlineOperation {
     InlineOp4Func   func;               /* MUST be first entry */
     const char*     classDescriptor;
     const char*     methodName;
     const char*     methodSignature;
-} InlineOperation;
+};
 
-/* Must be kept in sync w/ gDvmInlineOpsTable in InlineNative.c */
-typedef enum NativeInlineOps {
+/*
+ * Must be kept in sync w/ gDvmInlineOpsTable in InlineNative.c
+ *
+ * You should also add a test to libcore's IntrinsicTest.
+ */
+enum NativeInlineOps {
     INLINE_EMPTYINLINEMETHOD = 0,
     INLINE_STRING_CHARAT = 1,
     INLINE_STRING_COMPARETO = 2,
@@ -72,7 +80,7 @@ typedef enum NativeInlineOps {
     INLINE_DOUBLE_TO_LONG_BITS = 19,
     INLINE_DOUBLE_TO_RAW_LONG_BITS = 20,
     INLINE_LONG_BITS_TO_DOUBLE = 21,
-} NativeInlineOps;
+};
 
 /*
  * Get the inlineops table.
@@ -108,4 +116,78 @@ INLINE bool dvmPerformInlineOp4Std(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
 bool dvmPerformInlineOp4Dbg(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
     JValue* pResult, int opIndex);
 
-#endif /*_DALVIK_INLINENATIVE*/
+/*
+ * Return method & populate the table on first use.
+ */
+extern "C" Method* dvmResolveInlineNative(int opIndex);
+
+/*
+ * The actual inline native definitions.
+ */
+bool javaLangString_charAt(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                           JValue* pResult);
+
+bool javaLangString_compareTo(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                              JValue* pResult);
+
+bool javaLangString_equals(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                           JValue* pResult);
+
+bool javaLangString_length(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                           JValue* pResult);
+
+bool javaLangString_isEmpty(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                            JValue* pResult);
+
+bool javaLangString_fastIndexOf_II(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                                   JValue* pResult);
+
+bool javaLangMath_abs_int(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                          JValue* pResult);
+
+bool javaLangMath_abs_long(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                           JValue* pResult);
+
+bool javaLangMath_abs_float(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                            JValue* pResult);
+
+bool javaLangMath_abs_double(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                             JValue* pResult);
+
+bool javaLangMath_min_int(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                          JValue* pResult);
+
+bool javaLangMath_max_int(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                          JValue* pResult);
+
+bool javaLangMath_sqrt(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                       JValue* pResult);
+
+bool javaLangMath_cos(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                      JValue* pResult);
+
+bool javaLangMath_sin(u4 arg0, u4 arg1, u4 arg2, u4 arg3,
+                      JValue* pResult);
+
+bool javaLangFloat_floatToIntBits(u4 arg0, u4 arg1, u4 arg2, u4 arg,
+                                  JValue* pResult);
+
+bool javaLangFloat_floatToRawIntBits(u4 arg0, u4 arg1, u4 arg2, u4 arg,
+                                     JValue* pResult);
+
+bool javaLangFloat_intBitsToFloat(u4 arg0, u4 arg1, u4 arg2, u4 arg,
+                                  JValue* pResult);
+
+bool javaLangDouble_doubleToLongBits(u4 arg0, u4 arg1, u4 arg2, u4 arg,
+                                     JValue* pResult);
+
+bool javaLangDouble_longBitsToDouble(u4 arg0, u4 arg1, u4 arg2, u4 arg,
+                                     JValue* pResult);
+
+bool javaLangDouble_doubleToRawLongBits(u4 arg0, u4 arg1, u4 arg2,
+                                        u4 arg, JValue* pResult);
+
+bool javaLangDouble_longBitsToDouble(u4 arg0, u4 arg1, u4 arg2, u4 arg,
+                                     JValue* pResult);
+
+#endif  // DALVIK_INLINENATIVE_H_

@@ -16,8 +16,8 @@
 /*
  * JDWP internal interfaces.
  */
-#ifndef _DALVIK_JDWP_JDWPPRIV
-#define _DALVIK_JDWP_JDWPPRIV
+#ifndef DALVIK_JDWP_JDWPPRIV_H_
+#define DALVIK_JDWP_JDWPPRIV_H_
 
 #define LOG_TAG "jdwp"
 
@@ -43,14 +43,12 @@
  * Transport-specific network status.
  */
 struct JdwpNetState;
-typedef struct JdwpNetState JdwpNetState;
-
 struct JdwpState;
 
 /*
  * Transport functions.
  */
-typedef struct JdwpTransport {
+struct JdwpTransport {
     bool (*startup)(struct JdwpState* state, const JdwpStartupParams* pParams);
     bool (*accept)(struct JdwpState* state);
     bool (*establish)(struct JdwpState* state);
@@ -63,7 +61,7 @@ typedef struct JdwpTransport {
     bool (*sendRequest)(struct JdwpState* state, ExpandBuf* pReq);
     bool (*sendBufferedRequest)(struct JdwpState* state,
         const struct iovec* iov, int iovcnt);
-} JdwpTransport;
+};
 
 const JdwpTransport* dvmJdwpSocketTransport();
 const JdwpTransport* dvmJdwpAndroidAdbTransport();
@@ -118,6 +116,21 @@ struct JdwpState {
      * DDM support.
      */
     bool            ddmActive;
+};
+
+/*
+ * Base class for JdwpNetState
+ */
+class JdwpNetStateBase {
+public:
+    int             clientSock;     /* active connection to debugger */
+
+    JdwpNetStateBase();
+    ssize_t writePacket(ExpandBuf* pReply);
+    ssize_t writeBufferedPacket(const struct iovec* iov, int iovcnt);
+
+private:
+    pthread_mutex_t socketLock;     /* socket synchronization */
 };
 
 
@@ -176,4 +189,4 @@ INLINE bool dvmJdwpSendBufferedRequest(JdwpState* state,
     return (*state->transport->sendBufferedRequest)(state, iov, iovcnt);
 }
 
-#endif /*_DALVIK_JDWP_JDWPPRIV*/
+#endif  // DALVIK_JDWP_JDWPPRIV_H_

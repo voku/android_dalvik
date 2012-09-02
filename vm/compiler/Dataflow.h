@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _DALVIK_VM_DATAFLOW
-#define _DALVIK_VM_DATAFLOW
+#ifndef DALVIK_VM_DATAFLOW_H_
+#define DALVIK_VM_DATAFLOW_H_
 
 #include "Dalvik.h"
 #include "CompilerInternals.h"
@@ -102,12 +102,16 @@ typedef struct SSARepresentation {
     bool *fpDef;
 } SSARepresentation;
 
+/*
+ * An induction variable is represented by "m*i + c", where i is a basic
+ * induction variable.
+ */
 typedef struct InductionVariableInfo {
     int ssaReg;
     int basicSSAReg;
-    int m;
-    int c;
-    int inc;
+    int m;      // multiplier
+    int c;      // constant
+    int inc;    // loop incriment
 } InductionVariableInfo;
 
 typedef struct ArrayAccessInfo {
@@ -121,4 +125,4 @@ typedef struct ArrayAccessInfo {
 #define DECODE_REG(v)                   (v & 0xffff)
 #define DECODE_SUB(v)                   (((unsigned int) v) >> 16)
 
-#endif /* _DALVIK_VM_DATAFLOW */
+#endif  // DALVIK_VM_DATAFLOW_H_

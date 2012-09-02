@@ -16,10 +16,17 @@
 /*
  * Garbage-collecting allocator.
  */
-#ifndef _DALVIK_ALLOC_ALLOC
-#define _DALVIK_ALLOC_ALLOC
+#ifndef DALVIK_ALLOC_ALLOC_H_
+#define DALVIK_ALLOC_ALLOC_H_
 
 #include <stddef.h>
+
+/* flags for dvmMalloc */
+enum {
+    ALLOC_DEFAULT = 0x00,
+    ALLOC_DONT_TRACK = 0x01,  /* don't add to internal tracking list */
+    ALLOC_NON_MOVING = 0x02,
+};
 
 /*
  * Initialization.
@@ -29,6 +36,7 @@ bool dvmCreateStockExceptions(void);
 bool dvmGcStartupAfterZygote(void);
 void dvmGcShutdown(void);
 void dvmGcThreadShutdown(void);
+bool dvmGcStartupClasses(void);
 
 /*
  * Do any last-minute preparation before we call fork() for the first time.
@@ -53,20 +61,7 @@ void* dvmMalloc(size_t size, int flags);
  *
  * Returns NULL and throws an exception on failure.
  */
-Object* dvmAllocObject(ClassObject* clazz, int flags);
-
-/* flags for dvmMalloc */
-enum {
-    ALLOC_DEFAULT       = 0x00,
-    ALLOC_DONT_TRACK    = 0x01,     /* don't add to internal tracking list */
-    ALLOC_FINALIZABLE   = 0x02,     /* call finalize() before freeing */
-};
-
-/*
- * Call when a request is so far off that we can't call dvmMalloc().  Throws
- * an exception with the specified message.
- */
-void dvmThrowBadAllocException(const char* msg);
+extern "C" Object* dvmAllocObject(ClassObject* clazz, int flags);
 
 /*
  * Track an object reference that is currently only visible internally.
@@ -75,7 +70,7 @@ void dvmThrowBadAllocException(const char* msg);
  *
  * The "self" argument is allowed as an optimization; it may be NULL.
  */
-void dvmAddTrackedAlloc(Object* obj, Thread* self);
+extern "C" void dvmAddTrackedAlloc(Object* obj, Thread* self);
 
 /*
  * Remove an object from the internal tracking list.
@@ -84,55 +79,24 @@ void dvmAddTrackedAlloc(Object* obj, Thread* self);
  *
  * The "self" argument is allowed as an optimization; it may be NULL.
  */
-void dvmReleaseTrackedAlloc(Object* obj, Thread* self);
+extern "C" void dvmReleaseTrackedAlloc(Object* obj, Thread* self);
 
 /*
- * Returns true iff <obj> points to a valid allocated object.
+ * Returns true iff <obj> points to a zygote allocated object.
  */
-bool dvmIsValidObject(const Object* obj);
+bool dvmIsZygoteObject(const Object* obj);
 
 /*
  * Create a copy of an object.
  *
- * The new object will be added to the "tracked alloc" table.
+ * Returns NULL and throws an exception on failure.
  */
-Object* dvmCloneObject(Object* obj);
+Object* dvmCloneObject(Object* obj, int flags);
 
 /*
- * Validate the object pointer.  Returns "false" and throws an exception if
- * "obj" is null or invalid.
- *
- * This may be used in performance critical areas as a null-pointer check;
- * anything else here should be for debug builds only.  In particular, for
- * "release" builds we want to skip the call to dvmIsValidObject() -- the
- * classfile validation will screen out code that puts invalid data into
- * object reference registers.
+ * Make the object finalizable.
  */
-INLINE int dvmValidateObject(Object* obj)
-{
-    if (obj == NULL) {
-        dvmThrowException("Ljava/lang/NullPointerException;", NULL);
-        return false;
-    }
-#ifdef WITH_EXTRA_OBJECT_VALIDATION
-    if (!dvmIsValidObject(obj)) {
-        dvmAbort();
-        dvmThrowException("Ljava/lang/InternalError;",
-            "VM detected invalid object ptr");
-        return false;
-    }
-#endif
-#ifndef NDEBUG
-    /* check for heap corruption */
-    if (obj->clazz == NULL || ((u4) obj->clazz) <= 65536) {
-        dvmAbort();
-        dvmThrowException("Ljava/lang/InternalError;",
-            "VM detected invalid object class ptr");
-        return false;
-    }
-#endif
-    return true;
-}
+extern "C" void dvmSetFinalizable(Object* obj);
 
 /*
  * Determine the exact number of GC heap bytes used by an object.  (Internal
@@ -153,31 +117,32 @@ float dvmGetTargetHeapUtilization(void);
 void dvmSetTargetHeapUtilization(float newTarget);
 
 /*
- * If set is true, sets the new minimum heap size to size; always
- * returns the current (or previous) size.  If size is zero,
- * removes the current minimum constraint (if present).
+ * Sets HEAP_IDEAL_FREE
  */
-size_t dvmMinimumHeapSize(size_t size, bool set);
+void dvmSetTargetHeapIdealFree(size_t size);
 
 /*
- * Updates the internal count of externally-allocated memory.  If there's
- * enough room for that memory, returns true.  If not, returns false and
- * does not update the count.
+ * Gets HEAP_IDEAL_FREE
+ */
+int dvmGetTargetHeapIdealFree();
+
+/*
+ * Sets CONCURRENT_START
+ */
+void dvmSetTargetHeapConcurrentStart(size_t size);
+
+/*
+ * Gets CONCURRENT_START
+ */
+int dvmGetTargetHeapConcurrentStart();
+
+/*
+ * Initiate garbage collection.
  *
- * May cause a GC as a side-effect.
+ * This usually happens automatically, but can also be caused by
+ * Runtime.gc().
  */
-bool dvmTrackExternalAllocation(size_t n);
-
-/*
- * Reduces the internal count of externally-allocated memory.
- */
-void dvmTrackExternalFree(size_t n);
-
-/*
- * Returns the number of externally-allocated bytes being tracked by
- * dvmTrackExternalAllocation/Free().
- */
-size_t dvmGetExternalBytesAllocated(void);
+void dvmCollectGarbage(void);
 
 /*
  * Returns a count of the direct instances of a class.
@@ -189,4 +154,18 @@ size_t dvmCountInstancesOfClass(const ClassObject *clazz);
  */
 size_t dvmCountAssignableInstancesOfClass(const ClassObject *clazz);
 
-#endif /*_DALVIK_ALLOC_ALLOC*/
+/*
+ * Removes any growth limits from the heap.
+ */
+void dvmClearGrowthLimit(void);
+
+/*
+ * Returns true if the address is aligned appropriately for a heap object.
+ * Does not require the caller to hold the heap lock, and does not take the
+ * heap lock internally.
+ */
+bool dvmIsHeapAddress(void *address);
+
+bool dvmIsNonMovingObject(const Object* object);
+
+#endif  // DALVIK_ALLOC_ALLOC_H_

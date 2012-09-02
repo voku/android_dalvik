@@ -1814,9 +1814,7 @@ dalvik_inst:
     GET_VREG    rINST                   # rINST<- vAA
     cmp         $0, rINST              # check for null object
     movl        offGlue_self(%eax), %eax # %eax<- glue->self
-#ifdef WITH_MONITOR_TRACKING
-    EXPORT_PC   # export PC so we can grab stack trace
-#endif
+    EXPORT_PC   # need for precise GC
     je          common_errNullObject    # handle null object
 #    jmp         .LOP_MONITOR_ENTER_finish
 #%break
@@ -1829,13 +1827,6 @@ dalvik_inst:
                                         # return: void
     FFETCH_ADV  1, %edx                 # %edx<- next instruction hi; fetch, advance
     lea         8(%esp), %esp
-#ifdef WITH_DEADLOCK_PREDICTION
-    movl        rGLUE, %eax             # %eax<- pMterpGlue
-    movl        offGlue_self(%eax), %eax # %eax<- glue->self
-    movl        offThread_exception(%eax), %eax # %eax<- glue->self->exception
-    cmp         $0, %eax               # check for exception
-    jne         common_exceptionThrown  # handle exception
-#endif
     FGETOP_JMP  1, %edx                 # jump to next instruction; getop, jmp
 
 /* ------------------------------ */
@@ -14642,8 +14633,7 @@ OP_IF_LEZ_2f:
     FINISH_A                            # jump to next instruction
 /* ------------------------------ */
     .balign 64
-.L_OP_INVOKE_DIRECT_EMPTY: /* 0xf0 */
-/* File: x86-atom/OP_INVOKE_DIRECT_EMPTY.S */
+.L_OP_INVOKE_OBJECT_INIT_RANGE: /* 0xf0 */
    /* Copyright (C) 2008 The Android Open Source Project
     *
     * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14660,21 +14650,18 @@ OP_IF_LEZ_2f:
     */
 
    /*
-    * File: OP_INVOKE_DIRECT_EMPTY.S
-    *
-    * Code: Used as a no-op. Uses no substitutions.
-    *
-    * For: invoke-direct-empty
-    *
-    * Format: B|A|op CCCC G|F|E|D (35c)
+    * File: stub.S
     */
 
-    FINISH 3
-
+    SAVE_PC_FP_TO_GLUE %edx             # save program counter and frame pointer
+    pushl       rGLUE                   # push parameter glue
+    call        dvmMterp_OP_INVOKE_OBJECT_INIT_RANGE      # call c-based implementation
+    lea         4(%esp), %esp
+    LOAD_PC_FP_FROM_GLUE                # restore program counter and frame pointer
+    FINISH_A                            # jump to next instruction
 /* ------------------------------ */
     .balign 64
-.L_OP_UNUSED_F1: /* 0xf1 */
-/* File: x86-atom/OP_UNUSED_F1.S */
+.L_OP_RETURN_VOID_BARRIER: /* 0xf1 */
    /* Copyright (C) 2008 The Android Open Source Project
     *
     * Licensed under the Apache License, Version 2.0 (the "License");
@@ -14691,42 +14678,15 @@ OP_IF_LEZ_2f:
     */
 
    /*
-    * File: OP_UNUSED_F1.S
+    * File: stub.S
     */
 
-/* File: x86-atom/unused.S */
-   /* Copyright (C) 2008 The Android Open Source Project
-    *
-    * Licensed under the Apache License, Version 2.0 (the "License");
-    * you may not use this file except in compliance with the License.
-    * You may obtain a copy of the License at
-    *
-    * http://www.apache.org/licenses/LICENSE-2.0
-    *
-    * Unless required by applicable law or agreed to in writing, software
-    * distributed under the License is distributed on an "AS IS" BASIS,
-    * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-    * See the License for the specific language governing permissions and
-    * limitations under the License.
-    */
-
-   /*
-    * File: unused.S
-    *
-    * Code: Common code for unused bytecodes. Uses no subtitutions.
-    *
-    * For: all unused bytecodes
-    *
-    * Description: aborts if executed.
-    *
-    * Format: ØØ|op (10x)
-    *
-    * Syntax: op
-    */
-
-    call        common_abort
-
-
+    SAVE_PC_FP_TO_GLUE %edx             # save program counter and frame pointer
+    pushl       rGLUE                   # push parameter glue
+    call        dvmMterp_OP_RETURN_VOID_BARRIER      # call c-based implementation
+    lea         4(%esp), %esp
+    LOAD_PC_FP_FROM_GLUE                # restore program counter and frame pointer
+    FINISH_A                            # jump to next instruction
 /* ------------------------------ */
     .balign 64
 .L_OP_IGET_QUICK: /* 0xf2 */
@@ -15328,10 +15288,6 @@ OP_IF_LEZ_2f:
     * limitations under the License.
     */
 
-   /*
-    * File: OP_UNUSED_FF.S
-    */
-
 /* File: x86-atom/unused.S */
    /* Copyright (C) 2008 The Android Open Source Project
     *
@@ -15363,7 +15319,6 @@ OP_IF_LEZ_2f:
     */
 
     call        common_abort
-
 
 
     .balign 64
@@ -15492,6 +15447,13 @@ dvmAsmSisterStart:
     */
 
     EXPORT_PC                           # we will throw an exception
+#error BIT ROT!!!
+    /*
+     * TODO: Code here needs to call dvmThrowClassCastException with two
+     * arguments.
+     */
+#if 0
+    /* old obsolete code that called dvmThrowExceptionWithClassMessage */
     movl        $.LstrClassCastExceptionPtr, -8(%esp) # push parameter message
     movl        offObject_clazz(rINST), rINST # rINST<- obj->clazz
     movl        offClassObject_descriptor(rINST), rINST # rINST<- obj->clazz->descriptor
@@ -15500,6 +15462,7 @@ dvmAsmSisterStart:
     call        dvmThrowExceptionWithClassMessage # call: (const char* exceptionDescriptor,
                                                   #       const char* messageDescriptor, Object* cause)
                                                   # return: void
+#endif
     lea         8(%esp), %esp
     jmp         common_exceptionThrown
 
@@ -15527,9 +15490,6 @@ dvmAsmSisterStart:
     je          common_exceptionThrown  # handle excpetion
     movl        %eax, %ecx              # %ecx<- resolved class
     jmp         .LOP_CHECK_CAST_resolved
-
-.LstrClassCastExceptionPtr:
-.asciz      "Ljava/lang/ClassCastException;"
 
 /* continuation for OP_INSTANCE_OF */
 
@@ -17864,8 +17824,8 @@ dvmAsmInstructionJmpTable = .LdvmAsmInstructionJmpTable
 .long .L_OP_THROW_VERIFICATION_ERROR
 .long .L_OP_EXECUTE_INLINE
 .long .L_OP_EXECUTE_INLINE_RANGE
-.long .L_OP_INVOKE_DIRECT_EMPTY
-.long .L_OP_UNUSED_F1
+.long .L_OP_INVOKE_OBJECT_INIT_RANGE
+.long .L_OP_RETURN_VOID_BARRIER
 .long .L_OP_IGET_QUICK
 .long .L_OP_IGET_WIDE_QUICK
 .long .L_OP_IGET_OBJECT_QUICK
@@ -18530,8 +18490,6 @@ common_errNullObject:
     .asciz "Ljava/lang/ArrayIndexOutOfBoundsException;"
 .LstrArrayStoreException:
     .asciz "Ljava/lang/ArrayStoreException;"
-.LstrClassCastException:
-    .asciz "Ljava/lang/ClassCastException;"
 .LstrDivideByZero:
     .asciz "divide by zero"
 .LstrInstantiationError:

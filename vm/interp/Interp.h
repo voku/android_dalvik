@@ -17,8 +17,21 @@
 /*
  * Dalvik interpreter public definitions.
  */
-#ifndef _DALVIK_INTERP_INTERP
-#define _DALVIK_INTERP_INTERP
+#ifndef DALVIK_INTERP_INTERP_H_
+#define DALVIK_INTERP_INTERP_H_
+
+/*
+ * Stash the dalvik PC in the frame.  Called  during interpretation.
+ */
+INLINE void dvmExportPC(const u2* pc, const u4* fp)
+{
+    SAVEAREA_FROM_FP(fp)->xtra.currentPc = pc;
+}
+
+/*
+ * Extract the Dalvik opcode
+ */
+#define GET_OPCODE(_inst) (_inst & 0xff)
 
 /*
  * Interpreter entry point.  Call here after setting up the interpreted
@@ -32,13 +45,15 @@ void dvmInterpret(Thread* thread, const Method* method, JValue* pResult);
  * This is called from the handler for the throw-verification-error
  * instruction.  "method" is the method currently being executed.
  */
-void dvmThrowVerificationError(const Method* method, int kind, int ref);
+extern "C" void dvmThrowVerificationError(const Method* method,
+                                          int kind, int ref);
 
 /*
  * One-time initialization and shutdown.
  */
 bool dvmBreakpointStartup(void);
 void dvmBreakpointShutdown(void);
+void dvmInitInterpreterState(Thread* self);
 
 /*
  * Breakpoint implementation.
@@ -52,11 +67,51 @@ void dvmClearSingleStep(Thread* thread);
 /*
  * Recover the opcode that was replaced by a breakpoint.
  */
-u1 dvmGetOriginalOpCode(const u2* addr);
+extern "C" u1 dvmGetOriginalOpcode(const u2* addr);
 
 /*
  * Flush any breakpoints associated with methods in "clazz".
  */
 void dvmFlushBreakpoints(ClassObject* clazz);
 
-#endif /*_DALVIK_INTERP_INTERP*/
+/*
+ * Debugger support
+ */
+extern "C" void dvmCheckBefore(const u2 *dPC, u4 *fp, Thread* self);
+extern "C" void dvmReportExceptionThrow(Thread* self, Object* exception);
+extern "C" void dvmReportPreNativeInvoke(const Method* methodToCall, Thread* self, u4* fp);
+extern "C" void dvmReportPostNativeInvoke(const Method* methodToCall, Thread* self, u4* fp);
+extern "C" void dvmReportInvoke(Thread* self, const Method* methodToCall);
+extern "C" void dvmReportReturn(Thread* self);
+
+/*
+ * InterpBreak & subMode control
+ */
+void dvmDisableSubMode(Thread* thread, ExecutionSubModes subMode);
+extern "C" void dvmEnableSubMode(Thread* thread, ExecutionSubModes subMode);
+void dvmDisableAllSubMode(ExecutionSubModes subMode);
+void dvmEnableAllSubMode(ExecutionSubModes subMode);
+void dvmAddToSuspendCounts(Thread* thread, int delta, int dbgDelta);
+void dvmCheckInterpStateConsistency();
+void dvmInitializeInterpBreak(Thread* thread);
+
+/*
+ * Register a callback to occur at the next safe point for a single thread.
+ * If funct is NULL, the previous registration is cancelled.
+ *
+ * The callback prototype is:
+ *        bool funct(Thread* thread, void* arg)
+ *
+ *  If funct returns false, the callback will be disarmed.  If true,
+ *  it will stay in effect.
+ */
+void dvmArmSafePointCallback(Thread* thread, SafePointCallback funct,
+                             void* arg);
+
+
+#ifndef DVM_NO_ASM_INTERP
+extern void* dvmAsmInstructionStart[];
+extern void* dvmAsmAltInstructionStart[];
+#endif
+
+#endif  // DALVIK_INTERP_INTERP_H_

@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _DALVIK_VM_LOOP
-#define _DALVIK_VM_LOOP
+#ifndef DALVIK_VM_LOOP_H_
+#define DALVIK_VM_LOOP_H_
 
 #include "Dalvik.h"
 #include "CompilerInternals.h"
@@ -27,11 +27,22 @@ typedef struct LoopAnalysis {
     int numBasicIV;                     // number of basic induction variables
     int ssaBIV;                         // basic IV in SSA name
     bool isCountUpLoop;                 // count up or down loop
-    OpCode loopBranchOpcode;            // OP_IF_XXX for the loop back branch
+    Opcode loopBranchOpcode;            // OP_IF_XXX for the loop back branch
     int endConditionReg;                // vB in "vA op vB"
     LIR *branchToBody;                  // branch over to the body from entry
     LIR *branchToPCR;                   // branch over to the PCR cell
     bool bodyIsClean;                   // loop body cannot throw any exceptions
 } LoopAnalysis;
 
-#endif /* _DALVIK_VM_LOOP */
+bool dvmCompilerFilterLoopBlocks(CompilationUnit *cUnit);
+
+/*
+ * An unexecuted code path may contain unresolved fields or classes. Before we
+ * have a quiet resolver we simply bail out of the loop compilation mode.
+ */
+#define BAIL_LOOP_COMPILATION() if (cUnit->jitMode == kJitLoop) {       \
+                                    cUnit->quitLoopMode = true;         \
+                                    return false;                       \
+                                }
+
+#endif  // DALVIK_VM_LOOP_H_

@@ -22,6 +22,8 @@ import com.android.dx.dex.code.TargetInsn;
 import com.android.dx.rop.code.RegisterSpecList;
 import com.android.dx.util.AnnotatedOutput;
 
+import java.util.BitSet;
+
 /**
  * Instruction format {@code 31t}. See the instruction format spec
  * for details.
@@ -73,14 +75,18 @@ public final class Form31t extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public boolean branchFits(TargetInsn insn) {
-        return true;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        BitSet bits = new BitSet(1);
+
+        bits.set(0, unsignedFitsInByte(regs.get(0).getReg()));
+        return bits;
     }
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return null;
+    public boolean branchFits(TargetInsn insn) {
+        return true;
     }
 
     /** {@inheritDoc} */
@@ -89,8 +95,6 @@ public final class Form31t extends InsnFormat {
         RegisterSpecList regs = insn.getRegisters();
         int offset = ((TargetInsn) insn).getTargetOffset();
 
-        write(out, opcodeUnit(insn, regs.get(0).getReg()),
-                (short) offset,
-                (short) (offset >> 16));
+        write(out, opcodeUnit(insn, regs.get(0).getReg()), offset);
     }
 }

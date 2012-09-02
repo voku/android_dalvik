@@ -17,18 +17,19 @@
 /*
  * All-inclusive internal header file.  Include this to get everything useful.
  */
-#ifndef _DALVIK_DALVIK
-#define _DALVIK_DALVIK
-
-#include <pthread.h>
+#ifndef DALVIK_DALVIK_H_
+#define DALVIK_DALVIK_H_
 
 #include "Common.h"
 #include "Inlines.h"
 #include "Misc.h"
 #include "Bits.h"
+#include "BitVector.h"
 #include "libdex/SysUtil.h"
+#include "libdex/DexDebugInfo.h"
 #include "libdex/DexFile.h"
 #include "libdex/DexProto.h"
+#include "libdex/DexUtf.h"
 #include "libdex/ZipArchive.h"
 #include "DvmDex.h"
 #include "RawDexFile.h"
@@ -56,12 +57,9 @@
 #include "alloc/Alloc.h"
 #include "alloc/CardTable.h"
 #include "alloc/HeapDebug.h"
-#include "alloc/HeapWorker.h"
-#include "alloc/GC.h"
 #include "alloc/WriteBarrier.h"
 #include "oo/AccessCheck.h"
 #include "JarFile.h"
-#include "Properties.h"
 #include "jdwp/Jdwp.h"
 #include "SignalCatcher.h"
 #include "StdioConverter.h"
@@ -71,7 +69,7 @@
 #include "analysis/DexPrepare.h"
 #include "analysis/RegisterMap.h"
 #include "Init.h"
-#include "libdex/OpCode.h"
+#include "libdex/DexOpcodes.h"
 #include "libdex/InstrUtils.h"
 #include "AllocTracker.h"
 #include "PointerSet.h"
@@ -86,4 +84,4 @@
 #include "InlineNative.h"
 #include "oo/ObjectInlines.h"
 
-#endif /*_DALVIK_DALVIK*/
+#endif  // DALVIK_DALVIK_H_

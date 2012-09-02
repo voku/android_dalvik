@@ -16,8 +16,6 @@
 
 package com.android.dx.rop.code;
 
-import com.android.dx.rop.cst.CstUtf8;
-import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.type.StdTypeList;
 import com.android.dx.rop.type.Type;
 import com.android.dx.rop.type.TypeList;
@@ -237,14 +235,14 @@ public abstract class Insn implements ToHuman {
 
     /**
      * Returns an instance that is just like this one, except that, if
-     * possible, the insn is converted into a version in which the last
-     * source (if it is a constant) is represented directly rather than
-     * as a register reference. {@code this} is returned in cases where
-     * the translation is not possible.
+     * possible, the insn is converted into a version in which a source
+     * (if it is a constant) is represented directly rather than as a
+     * register reference. {@code this} is returned in cases where the
+     * translation is not possible.
      *
      * @return {@code non-null;} an appropriately-constructed instance
      */
-    public Insn withLastSourceLiteral() {
+    public Insn withSourceLiteral() {
         return this;
     }
 

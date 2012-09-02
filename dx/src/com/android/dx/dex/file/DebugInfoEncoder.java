@@ -22,7 +22,7 @@ import com.android.dx.rop.code.RegisterSpec;
 import com.android.dx.rop.code.SourcePosition;
 import com.android.dx.rop.cst.CstMethodRef;
 import com.android.dx.rop.cst.CstType;
-import com.android.dx.rop.cst.CstUtf8;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.type.Prototype;
 import com.android.dx.rop.type.StdTypeList;
 import com.android.dx.rop.type.Type;
@@ -376,7 +376,7 @@ public final class DebugInfoEncoder {
             PositionList.Entry entry = sortedPositions.get(0);
             line = entry.getPosition().getLine();
         }
-        output.writeUnsignedLeb128(line);
+        output.writeUleb128(line);
 
         if (annotate) {
             annotate(output.getCursor() - mark, "line_start: " + line);
@@ -403,7 +403,7 @@ public final class DebugInfoEncoder {
 
         // Write out the number of parameter entries that will follow.
         mark = output.getCursor();
-        output.writeUnsignedLeb128(szParamTypes);
+        output.writeUleb128(szParamTypes);
 
         if (annotate) {
             annotate(output.getCursor() - mark,
@@ -470,7 +470,7 @@ public final class DebugInfoEncoder {
                 continue;
             }
 
-            CstUtf8 signature = arg.getSignature();
+            CstString signature = arg.getSignature();
 
             if (signature != null) {
                 emitLocalStartExtended(arg);
@@ -576,7 +576,7 @@ public final class DebugInfoEncoder {
         sb.append(e.getRegister());
         sb.append(' ');
 
-        CstUtf8 name = e.getName();
+        CstString name = e.getName();
         if (name == null) {
             sb.append("null");
         } else {
@@ -591,7 +591,7 @@ public final class DebugInfoEncoder {
             sb.append(type.toHuman());
         }
 
-        CstUtf8 signature = e.getSignature();
+        CstString signature = e.getSignature();
 
         if (signature != null) {
             sb.append(' ');
@@ -636,12 +636,12 @@ public final class DebugInfoEncoder {
      * @param string {@code null-ok;} string to emit
      * @throws IOException
      */
-    private void emitStringIndex(CstUtf8 string) throws IOException {
+    private void emitStringIndex(CstString string) throws IOException {
         if ((string == null) || (file == null)) {
-            output.writeUnsignedLeb128(0);
+            output.writeUleb128(0);
         } else {
-            output.writeUnsignedLeb128(
-                1 + file.getStringIds().indexOf(string));
+            output.writeUleb128(
+                    1 + file.getStringIds().indexOf(string));
         }
 
         if (DEBUG) {
@@ -659,10 +659,10 @@ public final class DebugInfoEncoder {
      */
     private void emitTypeIndex(CstType type) throws IOException {
         if ((type == null) || (file == null)) {
-            output.writeUnsignedLeb128(0);
+            output.writeUleb128(0);
         } else {
-            output.writeUnsignedLeb128(
-                1 + file.getTypeIds().indexOf(type));
+            output.writeUleb128(
+                    1 + file.getTypeIds().indexOf(type));
         }
 
         if (DEBUG) {
@@ -748,7 +748,7 @@ public final class DebugInfoEncoder {
         int mark = output.getCursor();
 
         output.writeByte(DBG_END_LOCAL);
-        output.writeUnsignedLeb128(entry.getRegister());
+        output.writeUleb128(entry.getRegister());
 
         if (annotateTo != null || debugPrint != null) {
             annotate(output.getCursor() - mark,
@@ -851,7 +851,7 @@ public final class DebugInfoEncoder {
         int mark = output.getCursor();
 
         output.writeByte(DBG_ADVANCE_LINE);
-        output.writeSignedLeb128(deltaLines);
+        output.writeSleb128(deltaLines);
         line += deltaLines;
 
         if (annotateTo != null || debugPrint != null) {
@@ -875,7 +875,7 @@ public final class DebugInfoEncoder {
         int mark = output.getCursor();
 
         output.writeByte(DBG_ADVANCE_PC);
-        output.writeUnsignedLeb128(deltaAddress);
+        output.writeUleb128(deltaAddress);
         address += deltaAddress;
 
         if (annotateTo != null || debugPrint != null) {
@@ -903,7 +903,7 @@ public final class DebugInfoEncoder {
                     "Signed value where unsigned required: " + n);
         }
 
-        output.writeUnsignedLeb128(n);
+        output.writeUleb128(n);
     }
 
     /**

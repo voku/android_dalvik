@@ -24,8 +24,8 @@ import com.android.dx.rop.code.ThrowingCstInsn;
 import com.android.dx.rop.code.RegisterSpec;
 import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstFieldRef;
-import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.cst.CstType;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.type.Type;
 
 import java.util.HashMap;
@@ -45,11 +45,183 @@ public final class RopToDop {
         // This space intentionally left blank.
     }
 
+    /*
+     * The following comment lists each opcode that should be considered
+     * the "head" of an opcode chain, in terms of the process of fitting
+     * an instruction's arguments to an actual opcode. This list is
+     * automatically generated and may be of use in double-checking the
+     * manually-generated static initialization code for this class.
+     *
+     * TODO: Make opcode-gen produce useful code in this case instead
+     * of just a comment.
+     */
+
+    // BEGIN(first-opcodes); GENERATED AUTOMATICALLY BY opcode-gen
+    //     Opcodes.NOP
+    //     Opcodes.MOVE
+    //     Opcodes.MOVE_WIDE
+    //     Opcodes.MOVE_OBJECT
+    //     Opcodes.MOVE_RESULT
+    //     Opcodes.MOVE_RESULT_WIDE
+    //     Opcodes.MOVE_RESULT_OBJECT
+    //     Opcodes.MOVE_EXCEPTION
+    //     Opcodes.RETURN_VOID
+    //     Opcodes.RETURN
+    //     Opcodes.RETURN_WIDE
+    //     Opcodes.RETURN_OBJECT
+    //     Opcodes.CONST_4
+    //     Opcodes.CONST_WIDE_16
+    //     Opcodes.CONST_STRING
+    //     Opcodes.CONST_CLASS
+    //     Opcodes.MONITOR_ENTER
+    //     Opcodes.MONITOR_EXIT
+    //     Opcodes.CHECK_CAST
+    //     Opcodes.INSTANCE_OF
+    //     Opcodes.ARRAY_LENGTH
+    //     Opcodes.NEW_INSTANCE
+    //     Opcodes.NEW_ARRAY
+    //     Opcodes.FILLED_NEW_ARRAY
+    //     Opcodes.FILL_ARRAY_DATA
+    //     Opcodes.THROW
+    //     Opcodes.GOTO
+    //     Opcodes.PACKED_SWITCH
+    //     Opcodes.SPARSE_SWITCH
+    //     Opcodes.CMPL_FLOAT
+    //     Opcodes.CMPG_FLOAT
+    //     Opcodes.CMPL_DOUBLE
+    //     Opcodes.CMPG_DOUBLE
+    //     Opcodes.CMP_LONG
+    //     Opcodes.IF_EQ
+    //     Opcodes.IF_NE
+    //     Opcodes.IF_LT
+    //     Opcodes.IF_GE
+    //     Opcodes.IF_GT
+    //     Opcodes.IF_LE
+    //     Opcodes.IF_EQZ
+    //     Opcodes.IF_NEZ
+    //     Opcodes.IF_LTZ
+    //     Opcodes.IF_GEZ
+    //     Opcodes.IF_GTZ
+    //     Opcodes.IF_LEZ
+    //     Opcodes.AGET
+    //     Opcodes.AGET_WIDE
+    //     Opcodes.AGET_OBJECT
+    //     Opcodes.AGET_BOOLEAN
+    //     Opcodes.AGET_BYTE
+    //     Opcodes.AGET_CHAR
+    //     Opcodes.AGET_SHORT
+    //     Opcodes.APUT
+    //     Opcodes.APUT_WIDE
+    //     Opcodes.APUT_OBJECT
+    //     Opcodes.APUT_BOOLEAN
+    //     Opcodes.APUT_BYTE
+    //     Opcodes.APUT_CHAR
+    //     Opcodes.APUT_SHORT
+    //     Opcodes.IGET
+    //     Opcodes.IGET_WIDE
+    //     Opcodes.IGET_OBJECT
+    //     Opcodes.IGET_BOOLEAN
+    //     Opcodes.IGET_BYTE
+    //     Opcodes.IGET_CHAR
+    //     Opcodes.IGET_SHORT
+    //     Opcodes.IPUT
+    //     Opcodes.IPUT_WIDE
+    //     Opcodes.IPUT_OBJECT
+    //     Opcodes.IPUT_BOOLEAN
+    //     Opcodes.IPUT_BYTE
+    //     Opcodes.IPUT_CHAR
+    //     Opcodes.IPUT_SHORT
+    //     Opcodes.SGET
+    //     Opcodes.SGET_WIDE
+    //     Opcodes.SGET_OBJECT
+    //     Opcodes.SGET_BOOLEAN
+    //     Opcodes.SGET_BYTE
+    //     Opcodes.SGET_CHAR
+    //     Opcodes.SGET_SHORT
+    //     Opcodes.SPUT
+    //     Opcodes.SPUT_WIDE
+    //     Opcodes.SPUT_OBJECT
+    //     Opcodes.SPUT_BOOLEAN
+    //     Opcodes.SPUT_BYTE
+    //     Opcodes.SPUT_CHAR
+    //     Opcodes.SPUT_SHORT
+    //     Opcodes.INVOKE_VIRTUAL
+    //     Opcodes.INVOKE_SUPER
+    //     Opcodes.INVOKE_DIRECT
+    //     Opcodes.INVOKE_STATIC
+    //     Opcodes.INVOKE_INTERFACE
+    //     Opcodes.NEG_INT
+    //     Opcodes.NOT_INT
+    //     Opcodes.NEG_LONG
+    //     Opcodes.NOT_LONG
+    //     Opcodes.NEG_FLOAT
+    //     Opcodes.NEG_DOUBLE
+    //     Opcodes.INT_TO_LONG
+    //     Opcodes.INT_TO_FLOAT
+    //     Opcodes.INT_TO_DOUBLE
+    //     Opcodes.LONG_TO_INT
+    //     Opcodes.LONG_TO_FLOAT
+    //     Opcodes.LONG_TO_DOUBLE
+    //     Opcodes.FLOAT_TO_INT
+    //     Opcodes.FLOAT_TO_LONG
+    //     Opcodes.FLOAT_TO_DOUBLE
+    //     Opcodes.DOUBLE_TO_INT
+    //     Opcodes.DOUBLE_TO_LONG
+    //     Opcodes.DOUBLE_TO_FLOAT
+    //     Opcodes.INT_TO_BYTE
+    //     Opcodes.INT_TO_CHAR
+    //     Opcodes.INT_TO_SHORT
+    //     Opcodes.ADD_INT_2ADDR
+    //     Opcodes.SUB_INT_2ADDR
+    //     Opcodes.MUL_INT_2ADDR
+    //     Opcodes.DIV_INT_2ADDR
+    //     Opcodes.REM_INT_2ADDR
+    //     Opcodes.AND_INT_2ADDR
+    //     Opcodes.OR_INT_2ADDR
+    //     Opcodes.XOR_INT_2ADDR
+    //     Opcodes.SHL_INT_2ADDR
+    //     Opcodes.SHR_INT_2ADDR
+    //     Opcodes.USHR_INT_2ADDR
+    //     Opcodes.ADD_LONG_2ADDR
+    //     Opcodes.SUB_LONG_2ADDR
+    //     Opcodes.MUL_LONG_2ADDR
+    //     Opcodes.DIV_LONG_2ADDR
+    //     Opcodes.REM_LONG_2ADDR
+    //     Opcodes.AND_LONG_2ADDR
+    //     Opcodes.OR_LONG_2ADDR
+    //     Opcodes.XOR_LONG_2ADDR
+    //     Opcodes.SHL_LONG_2ADDR
+    //     Opcodes.SHR_LONG_2ADDR
+    //     Opcodes.USHR_LONG_2ADDR
+    //     Opcodes.ADD_FLOAT_2ADDR
+    //     Opcodes.SUB_FLOAT_2ADDR
+    //     Opcodes.MUL_FLOAT_2ADDR
+    //     Opcodes.DIV_FLOAT_2ADDR
+    //     Opcodes.REM_FLOAT_2ADDR
+    //     Opcodes.ADD_DOUBLE_2ADDR
+    //     Opcodes.SUB_DOUBLE_2ADDR
+    //     Opcodes.MUL_DOUBLE_2ADDR
+    //     Opcodes.DIV_DOUBLE_2ADDR
+    //     Opcodes.REM_DOUBLE_2ADDR
+    //     Opcodes.ADD_INT_LIT8
+    //     Opcodes.RSUB_INT_LIT8
+    //     Opcodes.MUL_INT_LIT8
+    //     Opcodes.DIV_INT_LIT8
+    //     Opcodes.REM_INT_LIT8
+    //     Opcodes.AND_INT_LIT8
+    //     Opcodes.OR_INT_LIT8
+    //     Opcodes.XOR_INT_LIT8
+    //     Opcodes.SHL_INT_LIT8
+    //     Opcodes.SHR_INT_LIT8
+    //     Opcodes.USHR_INT_LIT8
+    // END(first-opcodes)
+
     static {
         /*
          * Note: The choices made here are to pick the optimistically
          * smallest Dalvik opcode, and leave it to later processing to
-         * pessimize.
+         * pessimize. See the automatically-generated comment above
+         * for reference.
          */
         MAP = new HashMap<Rop, Dop>(400);
         MAP.put(Rops.NOP,               Dops.NOP);
@@ -146,10 +318,10 @@ public final class RopToDop {
         MAP.put(Rops.ADD_CONST_INT,        Dops.ADD_INT_LIT8);
         // Note: No dalvik ops for other types of add_const.
 
+        MAP.put(Rops.SUB_CONST_INT,        Dops.RSUB_INT_LIT8);
         /*
-         * Note: No dalvik ops for any type of sub_const; there's a
-         * *reverse* sub (constant - reg) for ints, though, but that
-         * should end up getting handled at optimization time.
+         * Note: No dalvik ops for any type of sub_const; instead
+         * there's a *reverse* sub (constant - reg) for ints only.
          */
 
         MAP.put(Rops.MUL_CONST_INT,        Dops.MUL_INT_LIT8);

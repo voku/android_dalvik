@@ -18,8 +18,8 @@
  * Functions for dealing with try-catch info.
  */
 
-#ifndef _LIBDEX_DEXCATCH
-#define _LIBDEX_DEXCATCH
+#ifndef LIBDEX_DEXCATCH_H_
+#define LIBDEX_DEXCATCH_H_
 
 #include "DexFile.h"
 #include "Leb128.h"
@@ -27,10 +27,10 @@
 /*
  * Catch handler entry, used while iterating over catch_handler_items.
  */
-typedef struct DexCatchHandler {
+struct DexCatchHandler {
     u4          typeIdx;    /* type index of the caught exception type */
     u4          address;    /* handler address */
-} DexCatchHandler;
+};
 
 /* Get the first handler offset for the given DexCode.
  * It's not 0 because the handlers list is prefixed with its size
@@ -44,12 +44,12 @@ u4 dexGetHandlersSize(const DexCode* pCode);
  * Iterator over catch handler data. This structure should be treated as
  * opaque.
  */
-typedef struct DexCatchIterator {
+struct DexCatchIterator {
     const u1* pEncodedData;
     bool catchesAll;
     u4 countRemaining;
     DexCatchHandler handler;
-} DexCatchIterator;
+};
 
 /* Initialize a DexCatchIterator to emptiness. This mostly exists to
  * squelch innocuous warnings. */
@@ -159,4 +159,4 @@ DEX_INLINE bool dexFindCatchHandler(DexCatchIterator *pIterator,
     }
 }
 
-#endif
+#endif  // LIBDEX_DEXCATCH_H_

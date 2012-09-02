@@ -27,6 +27,8 @@ import com.android.dx.rop.cst.CstType;
 import com.android.dx.rop.type.Type;
 import com.android.dx.util.AnnotatedOutput;
 
+import java.util.BitSet;
+
 /**
  * Instruction format {@code 35c}. See the instruction format spec
  * for details.
@@ -95,8 +97,24 @@ public final class Form35c extends InsnFormat {
 
     /** {@inheritDoc} */
     @Override
-    public InsnFormat nextUp() {
-        return Form3rc.THE_ONE;
+    public BitSet compatibleRegs(DalvInsn insn) {
+        RegisterSpecList regs = insn.getRegisters();
+        int sz = regs.size();
+        BitSet bits = new BitSet(sz);
+
+        for (int i = 0; i < sz; i++) {
+            RegisterSpec reg = regs.get(i);
+            /*
+             * The check below adds (category - 1) to the register, to
+             * account for the fact that the second half of a
+             * category-2 register has to be represented explicitly in
+             * the result.
+             */
+            bits.set(i, unsignedFitsInNibble(reg.getReg() +
+                                             reg.getCategory() - 1));
+        }
+
+        return bits;
     }
 
     /** {@inheritDoc} */

@@ -16,15 +16,14 @@
 /*
  * Allocation tracking and reporting.
  */
-#ifndef _DALVIK_ALLOCTRACKER
-#define _DALVIK_ALLOCTRACKER
+#ifndef DALVIK_ALLOCTRACKER_H_
+#define DALVIK_ALLOCTRACKER_H_
 
 /* initialization */
 bool dvmAllocTrackerStartup(void);
 void dvmAllocTrackerShutdown(void);
 
 struct AllocRecord;
-typedef struct AllocRecord AllocRecord;
 
 /*
  * Enable allocation tracking.  Does nothing if tracking is already enabled.
@@ -44,7 +43,7 @@ void dvmDisableAllocTracker(void);
         if (gDvm.allocRecords != NULL)                                      \
             dvmDoTrackAllocation(_clazz, _size);                            \
     }
-void dvmDoTrackAllocation(ClassObject* clazz, int size);
+void dvmDoTrackAllocation(ClassObject* clazz, size_t size);
 
 /*
  * Generate a DDM packet with all of the tracked allocation data.
@@ -60,4 +59,4 @@ bool dvmGenerateTrackedAllocationReport(u1** pData, size_t* pDataLen);
  */
 void dvmDumpTrackedAllocations(bool enable);
 
-#endif /*_DALVIK_ALLOCTRACKER*/
+#endif  // DALVIK_ALLOCTRACKER_H_

@@ -18,43 +18,43 @@
  * Functions to deal with class definition structures in DEX files
  */
 
-#ifndef _LIBDEX_DEXCLASS
-#define _LIBDEX_DEXCLASS
+#ifndef LIBDEX_DEXCLASS_H_
+#define LIBDEX_DEXCLASS_H_
 
 #include "DexFile.h"
 #include "Leb128.h"
 
 /* expanded form of a class_data_item header */
-typedef struct DexClassDataHeader {
+struct DexClassDataHeader {
     u4 staticFieldsSize;
     u4 instanceFieldsSize;
     u4 directMethodsSize;
     u4 virtualMethodsSize;
-} DexClassDataHeader;
+};
 
 /* expanded form of encoded_field */
-typedef struct DexField {
+struct DexField {
     u4 fieldIdx;    /* index to a field_id_item */
     u4 accessFlags;
-} DexField;
+};
 
 /* expanded form of encoded_method */
-typedef struct DexMethod {
+struct DexMethod {
     u4 methodIdx;    /* index to a method_id_item */
     u4 accessFlags;
     u4 codeOff;      /* file offset to a code_item */
-} DexMethod;
+};
 
 /* expanded form of class_data_item. Note: If a particular item is
  * absent (e.g., no static fields), then the corresponding pointer
  * is set to NULL. */
-typedef struct DexClassData {
+struct DexClassData {
     DexClassDataHeader header;
     DexField*          staticFields;
     DexField*          instanceFields;
     DexMethod*         directMethods;
     DexMethod*         virtualMethods;
-} DexClassData;
+};
 
 /* Read and verify the header of a class_data_item. This updates the
  * given data pointer to point past the end of the read data and
@@ -159,4 +159,4 @@ DEX_INLINE void dexReadClassDataMethod(const u1** pData, DexMethod* pMethod,
     *lastIndex = index;
 }
 
-#endif
+#endif  // LIBDEX_DEXCLASS_H_

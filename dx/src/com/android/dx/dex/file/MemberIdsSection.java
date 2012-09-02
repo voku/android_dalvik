@@ -16,10 +16,19 @@
 
 package com.android.dx.dex.file;
 
+import com.android.dx.util.DexException;
+import java.util.Formatter;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * Member (field or method) refs list section of a {@code .dex} file.
  */
 public abstract class MemberIdsSection extends UniformItemSection {
+    /** The largest addressable member is 0xffff, in the dex spec as field@CCCC or meth@CCCC. */
+    private static final int MAX_MEMBERS = 0x10000;
+
     /**
      * Constructs an instance. The file offset is initially unknown.
      *
@@ -36,9 +45,35 @@ public abstract class MemberIdsSection extends UniformItemSection {
     protected void orderItems() {
         int idx = 0;
 
+        if (items().size() > MAX_MEMBERS) {
+            throw new DexException(tooManyMembersMessage());
+        }
+
         for (Object i : items()) {
             ((MemberIdItem) i).setIndex(idx);
             idx++;
         }
+    }
+
+    private String tooManyMembersMessage() {
+        Map<String, AtomicInteger> membersByPackage = new TreeMap<String, AtomicInteger>();
+        for (Object member : items()) {
+            String packageName = ((MemberIdItem) member).getDefiningClass().getPackageName();
+            AtomicInteger count = membersByPackage.get(packageName);
+            if (count == null) {
+                count = new AtomicInteger();
+                membersByPackage.put(packageName, count);
+            }
+            count.incrementAndGet();
+        }
+
+        Formatter formatter = new Formatter();
+        String memberType = this instanceof MethodIdsSection ? "methods" : "fields";
+        formatter.format("Too many %s: %d; max is %d. By package:",
+                memberType, items().size(), MAX_MEMBERS);
+        for (Map.Entry<String, AtomicInteger> entry : membersByPackage.entrySet()) {
+            formatter.format("%n%6d %s", entry.getValue().get(), entry.getKey());
+        }
+        return formatter.toString();
     }
 }

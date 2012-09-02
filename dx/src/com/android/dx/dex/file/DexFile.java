@@ -16,13 +16,14 @@
 
 package com.android.dx.dex.file;
 
+import com.android.dx.dex.DexFormat;
+import com.android.dx.dex.DexOptions;
 import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstBaseMethodRef;
 import com.android.dx.rop.cst.CstEnumRef;
 import com.android.dx.rop.cst.CstFieldRef;
 import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.cst.CstType;
-import com.android.dx.rop.cst.CstUtf8;
 import com.android.dx.rop.type.Type;
 import com.android.dx.util.ByteArrayAnnotatedOutput;
 import com.android.dx.util.ExceptionWithContext;
@@ -42,6 +43,9 @@ import static com.android.dx.dex.file.MixedItemSection.SortType;
  * file, which itself consists of a set of Dalvik classes.
  */
 public final class DexFile {
+    /** options controlling the creation of the file */
+    private DexOptions dexOptions;
+
     /** {@code non-null;} word data section */
     private final MixedItemSection wordData;
 
@@ -104,7 +108,9 @@ public final class DexFile {
     /**
      * Constructs an instance. It is initially empty.
      */
-    public DexFile() {
+    public DexFile(DexOptions dexOptions) {
+        this.dexOptions = dexOptions;
+
         header = new HeaderSection(this);
         typeLists = new MixedItemSection(null, this, 4, SortType.NONE);
         wordData = new MixedItemSection("word_data", this, 4, SortType.TYPE);
@@ -131,6 +137,20 @@ public final class DexFile {
 
         fileSize = -1;
         dumpWidth = 79;
+    }
+
+    /**
+     * Returns true if this dex doesn't contain any class defs.
+     */
+    public boolean isEmpty() {
+        return classDefs.items().isEmpty();
+    }
+
+    /**
+     * Gets the dex-creation options object.
+     */
+    public DexOptions getDexOptions() {
+        return dexOptions;
     }
 
     /**
@@ -423,8 +443,6 @@ public final class DexFile {
     /*package*/ void internIfAppropriate(Constant cst) {
         if (cst instanceof CstString) {
             stringIds.intern((CstString) cst);
-        } else if (cst instanceof CstUtf8) {
-            stringIds.intern((CstUtf8) cst);
         } else if (cst instanceof CstType) {
             typeIds.intern((CstType) cst);
         } else if (cst instanceof CstBaseMethodRef) {

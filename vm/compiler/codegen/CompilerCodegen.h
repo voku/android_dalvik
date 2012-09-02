@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _DALVIK_VM_COMPILERCODEGEN_H_
-#define _DALVIK_VM_COMPILERCODEGEN_H_
+#ifndef DALVIK_VM_COMPILERCODEGEN_H_
+#define DALVIK_VM_COMPILERCODEGEN_H_
 
 #include "compiler/CompilerIR.h"
 
@@ -28,8 +28,18 @@ bool dvmCompilerDoWork(CompilerWorkOrder *work);
 /* Lower middle-level IR to low-level IR */
 void dvmCompilerMIR2LIR(CompilationUnit *cUnit);
 
+/* Lower middle-level IR to low-level IR for the whole method */
+void dvmCompilerMethodMIR2LIR(CompilationUnit *cUnit);
+
 /* Assemble LIR into machine code */
 void dvmCompilerAssembleLIR(CompilationUnit *cUnit, JitTranslationInfo *info);
+
+/* Perform translation chain operation. */
+extern "C" void* dvmJitChain(void* tgtAddr, u4* branchAddr);
+
+/* Install class objects in the literal pool */
+void dvmJitInstallClassObjectPointers(CompilationUnit *cUnit,
+                                      char *codeAddress);
 
 /* Patch inline cache content for polymorphic callsites */
 bool dvmJitPatchInlineCache(void *cellPtr, void *contentPtr);
@@ -38,13 +48,10 @@ bool dvmJitPatchInlineCache(void *cellPtr, void *contentPtr);
 void dvmCompilerCodegenDump(CompilationUnit *cUnit);
 
 /* Implemented in the codegen/<target>/Assembler.c */
-void* dvmJitChain(void *tgtAddr, u4* branchAddr);
-u4* dvmJitUnchain(void *codeAddr);
-void dvmJitUnchainAll(void);
 void dvmCompilerPatchInlineCache(void);
 
 /* Implemented in codegen/<target>/Ralloc.c */
-void dvmCompilerRegAlloc(CompilationUnit *cUnit);
+void dvmCompilerLocalRegAlloc(CompilationUnit *cUnit);
 
 /* Implemented in codegen/<target>/Thumb<version>Util.c */
 void dvmCompilerInitializeRegAlloc(CompilationUnit *cUnit);
@@ -62,6 +69,6 @@ bool dvmCompilerArchVariantInit(void);
 int dvmCompilerTargetOptHint(int key);
 
 /* Implemented in codegen/<target>/<target_variant>/ArchVariant.c */
-void dvmCompilerGenMemBarrier(CompilationUnit *cUnit);
+void dvmCompilerGenMemBarrier(CompilationUnit *cUnit, int barrierKind);
 
-#endif /* _DALVIK_VM_COMPILERCODEGEN_H_ */
+#endif  // DALVIK_VM_COMPILERCODEGEN_H_

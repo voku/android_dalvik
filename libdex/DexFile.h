@@ -30,8 +30,8 @@
  * All memory-mapped structures are 32-bit aligned unless otherwise noted.
  */
 
-#ifndef _LIBDEX_DEXFILE
-#define _LIBDEX_DEXFILE
+#ifndef LIBDEX_DEXFILE_H_
+#define LIBDEX_DEXFILE_H_
 
 #include "vm/Common.h"      // basic type defs, e.g. u1/u2/u4/u8, and LOG
 #include "libdex/SysUtil.h"
@@ -49,8 +49,15 @@
 
 /* DEX file magic number */
 #define DEX_MAGIC       "dex\n"
-/* version, encoded in 4 bytes of ASCII */
-#define DEX_MAGIC_VERS  "035\0"
+
+/* current version, encoded in 4 bytes of ASCII */
+#define DEX_MAGIC_VERS  "036\0"
+
+/*
+ * older but still-recognized version (corresponding to Android API
+ * levels 13 and earlier
+ */
+#define DEX_MAGIC_VERS_API_13  "035\0"
 
 /* same, but for optimized DEX header */
 #define DEX_OPT_MAGIC   "dey\n"
@@ -68,6 +75,22 @@ enum { kSHA1DigestLen = 20,
 enum {
     kDexEndianConstant = 0x12345678,    /* the endianness indicator */
     kDexNoIndex = 0xffffffff,           /* not a valid index value */
+};
+
+/*
+ * Enumeration of all the primitive types.
+ */
+enum PrimitiveType {
+    PRIM_NOT        = 0,       /* value is a reference type, not a primitive type */
+    PRIM_VOID       = 1,
+    PRIM_BOOLEAN    = 2,
+    PRIM_BYTE       = 3,
+    PRIM_SHORT      = 4,
+    PRIM_CHAR       = 5,
+    PRIM_INT        = 6,
+    PRIM_LONG       = 7,
+    PRIM_FLOAT      = 8,
+    PRIM_DOUBLE     = 9,
 };
 
 /*
@@ -190,7 +213,7 @@ enum {
 /*
  * Direct-mapped "header_item" struct.
  */
-typedef struct DexHeader {
+struct DexHeader {
     u1  magic[8];           /* includes version number */
     u4  checksum;           /* adler32 checksum */
     u1  signature[kSHA1DigestLen]; /* SHA-1 hash */
@@ -214,71 +237,71 @@ typedef struct DexHeader {
     u4  classDefsOff;
     u4  dataSize;
     u4  dataOff;
-} DexHeader;
+};
 
 /*
  * Direct-mapped "map_item".
  */
-typedef struct DexMapItem {
-    u2  type;              /* type code (see kDexType* above) */
-    u2  unused;
-    u4  size;              /* count of items of the indicated type */
-    u4  offset;            /* file offset to the start of data */
-} DexMapItem;
+struct DexMapItem {
+    u2 type;              /* type code (see kDexType* above) */
+    u2 unused;
+    u4 size;              /* count of items of the indicated type */
+    u4 offset;            /* file offset to the start of data */
+};
 
 /*
  * Direct-mapped "map_list".
  */
-typedef struct DexMapList {
+struct DexMapList {
     u4  size;               /* #of entries in list */
     DexMapItem list[1];     /* entries */
-} DexMapList;
+};
 
 /*
  * Direct-mapped "string_id_item".
  */
-typedef struct DexStringId {
-    u4  stringDataOff;      /* file offset to string_data_item */
-} DexStringId;
+struct DexStringId {
+    u4 stringDataOff;      /* file offset to string_data_item */
+};
 
 /*
  * Direct-mapped "type_id_item".
  */
-typedef struct DexTypeId {
+struct DexTypeId {
     u4  descriptorIdx;      /* index into stringIds list for type descriptor */
-} DexTypeId;
+};
 
 /*
  * Direct-mapped "field_id_item".
  */
-typedef struct DexFieldId {
+struct DexFieldId {
     u2  classIdx;           /* index into typeIds list for defining class */
     u2  typeIdx;            /* index into typeIds for field type */
     u4  nameIdx;            /* index into stringIds for field name */
-} DexFieldId;
+};
 
 /*
  * Direct-mapped "method_id_item".
  */
-typedef struct DexMethodId {
+struct DexMethodId {
     u2  classIdx;           /* index into typeIds list for defining class */
     u2  protoIdx;           /* index into protoIds for method prototype */
     u4  nameIdx;            /* index into stringIds for method name */
-} DexMethodId;
+};
 
 /*
  * Direct-mapped "proto_id_item".
  */
-typedef struct DexProtoId {
+struct DexProtoId {
     u4  shortyIdx;          /* index into stringIds for shorty descriptor */
     u4  returnTypeIdx;      /* index into typeIds list for return type */
     u4  parametersOff;      /* file offset to type_list for parameter types */
-} DexProtoId;
+};
 
 /*
  * Direct-mapped "class_def_item".
  */
-typedef struct DexClassDef {
+struct DexClassDef {
     u4  classIdx;           /* index into typeIds for this class */
     u4  accessFlags;
     u4  superclassIdx;      /* index into typeIds for superclass */
@@ -287,22 +310,22 @@ typedef struct DexClassDef {
     u4  annotationsOff;     /* file offset to annotations_directory_item */
     u4  classDataOff;       /* file offset to class_data_item */
     u4  staticValuesOff;    /* file offset to DexEncodedArray */
-} DexClassDef;
+};
 
 /*
  * Direct-mapped "type_item".
  */
-typedef struct DexTypeItem {
+struct DexTypeItem {
     u2  typeIdx;            /* index into typeIds */
-} DexTypeItem;
+};
 
 /*
  * Direct-mapped "type_list".
  */
-typedef struct DexTypeList {
+struct DexTypeList {
     u4  size;               /* #of entries in list */
     DexTypeItem list[1];    /* entries */
-} DexTypeList;
+};
 
 /*
  * Direct-mapped "code_item".
@@ -311,7 +334,7 @@ typedef struct DexTypeList {
  * "debugInfo" is used when displaying an exception stack trace or
  * debugging. An offset of zero indicates that there are no entries.
  */
-typedef struct DexCode {
+struct DexCode {
     u2  registersSize;
     u2  insSize;
     u2  outsSize;
@@ -323,29 +346,29 @@ typedef struct DexCode {
     /* followed by try_item[triesSize] */
     /* followed by uleb128 handlersSize */
     /* followed by catch_handler_item[handlersSize] */
-} DexCode;
+};
 
 /*
  * Direct-mapped "try_item".
  */
-typedef struct DexTry {
+struct DexTry {
     u4  startAddr;          /* start address, in 16-bit code units */
     u2  insnCount;          /* instruction count, in 16-bit code units */
     u2  handlerOff;         /* offset in encoded handler data to handlers */
-} DexTry;
+};
 
 /*
  * Link table.  Currently undefined.
  */
-typedef struct DexLink {
+struct DexLink {
     u1  bleargh;
-} DexLink;
+};
 
 
 /*
  * Direct-mapped "annotations_directory_item".
  */
-typedef struct DexAnnotationsDirectoryItem {
+struct DexAnnotationsDirectoryItem {
     u4  classAnnotationsOff;  /* offset to DexAnnotationSetItem */
     u4  fieldsSize;           /* count of DexFieldAnnotationsItem */
     u4  methodsSize;          /* count of DexMethodAnnotationsItem */
@@ -353,73 +376,73 @@ typedef struct DexAnnotationsDirectoryItem {
     /* followed by DexFieldAnnotationsItem[fieldsSize] */
     /* followed by DexMethodAnnotationsItem[methodsSize] */
     /* followed by DexParameterAnnotationsItem[parametersSize] */
-} DexAnnotationsDirectoryItem;
+};
 
 /*
  * Direct-mapped "field_annotations_item".
  */
-typedef struct DexFieldAnnotationsItem {
+struct DexFieldAnnotationsItem {
     u4  fieldIdx;
     u4  annotationsOff;             /* offset to DexAnnotationSetItem */
-} DexFieldAnnotationsItem;
+};
 
 /*
  * Direct-mapped "method_annotations_item".
  */
-typedef struct DexMethodAnnotationsItem {
+struct DexMethodAnnotationsItem {
     u4  methodIdx;
     u4  annotationsOff;             /* offset to DexAnnotationSetItem */
-} DexMethodAnnotationsItem;
+};
 
 /*
  * Direct-mapped "parameter_annotations_item".
  */
-typedef struct DexParameterAnnotationsItem {
+struct DexParameterAnnotationsItem {
     u4  methodIdx;
     u4  annotationsOff;             /* offset to DexAnotationSetRefList */
-} DexParameterAnnotationsItem;
+};
 
 /*
  * Direct-mapped "annotation_set_ref_item".
  */
-typedef struct DexAnnotationSetRefItem {
+struct DexAnnotationSetRefItem {
     u4  annotationsOff;             /* offset to DexAnnotationSetItem */
-} DexAnnotationSetRefItem;
+};
 
 /*
  * Direct-mapped "annotation_set_ref_list".
  */
-typedef struct DexAnnotationSetRefList {
+struct DexAnnotationSetRefList {
     u4  size;
     DexAnnotationSetRefItem list[1];
-} DexAnnotationSetRefList;
+};
 
 /*
- * Direct-mapped "anotation_set_item".
+ * Direct-mapped "annotation_set_item".
  */
-typedef struct DexAnnotationSetItem {
+struct DexAnnotationSetItem {
     u4  size;
     u4  entries[1];                 /* offset to DexAnnotationItem */
-} DexAnnotationSetItem;
+};
 
 /*
  * Direct-mapped "annotation_item".
  *
  * NOTE: this structure is byte-aligned.
  */
-typedef struct DexAnnotationItem {
+struct DexAnnotationItem {
     u1  visibility;
     u1  annotation[1];              /* data in encoded_annotation format */
-} DexAnnotationItem;
+};
 
 /*
  * Direct-mapped "encoded_array".
  *
  * NOTE: this structure is byte-aligned.
  */
-typedef struct DexEncodedArray {
+struct DexEncodedArray {
     u1  array[1];                   /* data in encoded_array format */
-} DexEncodedArray;
+};
 
 /*
  * Lookup table for classes.  It provides a mapping from class name to
@@ -430,7 +453,7 @@ typedef struct DexEncodedArray {
  * a hash table with direct pointers to the items, but because it's shared
  * there's less of a penalty for using a fairly sparse table.
  */
-typedef struct DexClassLookup {
+struct DexClassLookup {
     int     size;                       // total size, including "size"
     int     numEntries;                 // size of table[]; always power of 2
     struct {
@@ -438,7 +461,7 @@ typedef struct DexClassLookup {
         int     classDescriptorOffset;  // in bytes, from start of DEX
         int     classDefOffset;         // in bytes, from start of DEX
     } table[1];
-} DexClassLookup;
+};
 
 /*
  * Header added by DEX optimization pass.  Values are always written in
@@ -448,7 +471,7 @@ typedef struct DexClassLookup {
  *
  * Try to keep this simple and fixed-size.
  */
-typedef struct DexOptHeader {
+struct DexOptHeader {
     u1  magic[8];           /* includes version number */
 
     u4  dexOffset;          /* file offset of DEX header */
@@ -462,12 +485,9 @@ typedef struct DexOptHeader {
     u4  checksum;           /* adler32 checksum covering deps/opt */
 
     /* pad for 64-bit alignment if necessary */
-} DexOptHeader;
+};
 
-#define DEX_FLAG_VERIFIED           (1)     /* tried to verify all classes */
 #define DEX_OPT_FLAG_BIG            (1<<1)  /* swapped to big-endian */
-#define DEX_OPT_FLAG_FIELDS         (1<<2)  /* field access optimized */
-#define DEX_OPT_FLAG_INVOCATIONS    (1<<3)  /* method calls optimized */
 
 #define DEX_INTERFACE_CACHE_SIZE    128     /* must be power of 2 */
 
@@ -477,7 +497,7 @@ typedef struct DexOptHeader {
  * Code should regard DexFile as opaque, using the API calls provided here
  * to access specific structures.
  */
-typedef struct DexFile {
+struct DexFile {
     /* directly-mapped "opt" header */
     const DexOptHeader* pOptHeader;
 
@@ -506,7 +526,7 @@ typedef struct DexFile {
 
     /* additional app-specific data structures associated with the DEX */
     //void*               auxData;
-} DexFile;
+};
 
 /*
  * Utility function -- rounds up to the nearest power of 2.
@@ -545,6 +565,13 @@ int dexSwapAndVerify(u1* addr, int len);
  * Return 0 on success.
  */
 int dexSwapAndVerifyIfNecessary(u1* addr, int len);
+
+/*
+ * Check to see if the file magic and format version in the given
+ * header are recognized as valid. Returns true if they are
+ * acceptable.
+ */
+bool dexHasValidMagic(const DexHeader* pHeader);
 
 /*
  * Compute DEX checksum.
@@ -753,35 +780,6 @@ DEX_INLINE const u1* dexGetDebugInfoStream(const DexFile* pDexFile,
     }
 }
 
-/*
- * Callback for "new position table entry".
- * Returning non-0 causes the decoder to stop early.
- */
-typedef int (*DexDebugNewPositionCb)(void *cnxt, u4 address, u4 lineNum);
-
-/*
- * Callback for "new locals table entry". "signature" is an empty string
- * if no signature is available for an entry.
- */
-typedef void (*DexDebugNewLocalCb)(void *cnxt, u2 reg, u4 startAddress,
-        u4 endAddress, const char *name, const char *descriptor,
-        const char *signature);
-
-/*
- * Decode debug info for method.
- *
- * posCb is called in ascending address order.
- * localCb is called in order of ascending end address.
- */
-void dexDecodeDebugInfo(
-            const DexFile* pDexFile,
-            const DexCode* pDexCode,
-            const char* classDescriptor,
-            u4 protoIdx,
-            u4 accessFlags,
-            DexDebugNewPositionCb posCb, DexDebugNewLocalCb localCb,
-            void* cnxt);
-
 /* DexClassDef convenience - get class descriptor */
 DEX_INLINE const char* dexGetClassDescriptor(const DexFile* pDexFile,
     const DexClassDef* pClassDef)
@@ -949,108 +947,31 @@ DEX_INLINE const DexAnnotationItem* dexGetAnnotationItem(
         (pDexFile->baseAddr + dexGetAnnotationOff(pAnnoSet, idx));
 }
 
+/*
+ * Get the type descriptor character associated with a given primitive
+ * type. This returns '\0' if the type is invalid.
+ */
+char dexGetPrimitiveTypeDescriptorChar(PrimitiveType type);
 
 /*
- * ===========================================================================
- *      Utility Functions
- * ===========================================================================
+ * Get the type descriptor string associated with a given primitive
+ * type.
  */
+const char* dexGetPrimitiveTypeDescriptor(PrimitiveType type);
 
 /*
- * Retrieve the next UTF-16 character from a UTF-8 string.
- *
- * Advances "*pUtf8Ptr" to the start of the next character.
- *
- * WARNING: If a string is corrupted by dropping a '\0' in the middle
- * of a 3-byte sequence, you can end up overrunning the buffer with
- * reads (and possibly with the writes if the length was computed and
- * cached before the damage). For performance reasons, this function
- * assumes that the string being parsed is known to be valid (e.g., by
- * already being verified). Most strings we process here are coming
- * out of dex files or other internal translations, so the only real
- * risk comes from the JNI NewStringUTF call.
+ * Get the boxed type descriptor string associated with a given
+ * primitive type. This returns NULL for an invalid type, including
+ * particularly for type "void". In the latter case, even though there
+ * is a class Void, there's no such thing as a boxed instance of it.
  */
-DEX_INLINE u2 dexGetUtf16FromUtf8(const char** pUtf8Ptr)
-{
-    unsigned int one, two, three;
+const char* dexGetBoxedTypeDescriptor(PrimitiveType type);
 
-    one = *(*pUtf8Ptr)++;
-    if ((one & 0x80) != 0) {
-        /* two- or three-byte encoding */
-        two = *(*pUtf8Ptr)++;
-        if ((one & 0x20) != 0) {
-            /* three-byte encoding */
-            three = *(*pUtf8Ptr)++;
-            return ((one & 0x0f) << 12) |
-                   ((two & 0x3f) << 6) |
-                   (three & 0x3f);
-        } else {
-            /* two-byte encoding */
-            return ((one & 0x1f) << 6) |
-                   (two & 0x3f);
-        }
-    } else {
-        /* one-byte encoding */
-        return one;
-    }
-}
+/*
+ * Get the primitive type constant from the given descriptor character.
+ * This returns PRIM_NOT (note: this is a 0) if the character is invalid
+ * as a primitive type descriptor.
+ */
+PrimitiveType dexGetPrimitiveTypeFromDescriptorChar(char descriptorChar);
 
-/* Compare two '\0'-terminated modified UTF-8 strings, using Unicode
- * code point values for comparison. This treats different encodings
- * for the same code point as equivalent, except that only a real '\0'
- * byte is considered the string terminator. The return value is as
- * for strcmp(). */
-int dexUtf8Cmp(const char* s1, const char* s2);
-
-
-/* for dexIsValidMemberNameUtf8(), a bit vector indicating valid low ascii */
-extern u4 DEX_MEMBER_VALID_LOW_ASCII[4];
-
-/* Helper for dexIsValidMemberUtf8(); do not call directly. */
-bool dexIsValidMemberNameUtf8_0(const char** pUtf8Ptr);
-
-/* Return whether the pointed-at modified-UTF-8 encoded character is
- * valid as part of a member name, updating the pointer to point past
- * the consumed character. This will consume two encoded UTF-16 code
- * points if the character is encoded as a surrogate pair. Also, if
- * this function returns false, then the given pointer may only have
- * been partially advanced. */
-DEX_INLINE bool dexIsValidMemberNameUtf8(const char** pUtf8Ptr) {
-    u1 c = (u1) **pUtf8Ptr;
-    if (c <= 0x7f) {
-        // It's low-ascii, so check the table.
-        u4 wordIdx = c >> 5;
-        u4 bitIdx = c & 0x1f;
-        (*pUtf8Ptr)++;
-        return (DEX_MEMBER_VALID_LOW_ASCII[wordIdx] & (1 << bitIdx)) != 0;
-    }
-
-    /*
-     * It's a multibyte encoded character. Call a non-inline function
-     * for the heavy lifting.
-     */
-    return dexIsValidMemberNameUtf8_0(pUtf8Ptr);
-}
-
-/* Return whether the given string is a valid field or method name. */
-bool dexIsValidMemberName(const char* s);
-
-/* Return whether the given string is a valid type descriptor. */
-bool dexIsValidTypeDescriptor(const char* s);
-
-/* Return whether the given string is a valid reference descriptor. This
- * is true if dexIsValidTypeDescriptor() returns true and the descriptor
- * is for a class or array and not a primitive type. */
-bool dexIsReferenceDescriptor(const char* s);
-
-/* Return whether the given string is a valid class descriptor. This
- * is true if dexIsValidTypeDescriptor() returns true and the descriptor
- * is for a class and not an array or primitive type. */
-bool dexIsClassDescriptor(const char* s);
-
-/* Return whether the given string is a valid field type descriptor. This
- * is true if dexIsValidTypeDescriptor() returns true and the descriptor
- * is for anything but "void". */
-bool dexIsFieldDescriptor(const char* s);
-
-#endif /*_LIBDEX_DEXFILE*/
+#endif  // LIBDEX_DEXFILE_H_

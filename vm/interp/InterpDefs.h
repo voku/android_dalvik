@@ -21,66 +21,10 @@
  *
  * Functions and globals declared here are defined in Interp.c.
  */
-#ifndef _DALVIK_INTERP_DEFS
-#define _DALVIK_INTERP_DEFS
-
-
-/*
- * Specify the starting point when switching between interpreters.
- */
-typedef enum InterpEntry {
-    kInterpEntryInstr = 0,      // continue to next instruction
-    kInterpEntryReturn = 1,     // jump to method return
-    kInterpEntryThrow = 2,      // jump to exception throw
-#if defined(WITH_JIT)
-    kInterpEntryResume = 3,     // Resume after single-step
-#endif
-} InterpEntry;
+#ifndef DALVIK_INTERP_DEFS_H_
+#define DALVIK_INTERP_DEFS_H_
 
 #if defined(WITH_JIT)
-/*
- * There are six entry points from the compiled code to the interpreter:
- * 1) dvmJitToInterpNormal: find if there is a corresponding compilation for
- *    the new dalvik PC. If so, chain the originating compilation with the
- *    target then jump to it.
- * 2) dvmJitToInterpInvokeNoChain: similar to 1) but don't chain. This is
- *    for handling 1-to-many mappings like virtual method call and
- *    packed switch.
- * 3) dvmJitToInterpPunt: use the fast interpreter to execute the next
- *    instruction(s) and stay there as long as it is appropriate to return
- *    to the compiled land. This is used when the jit'ed code is about to
- *    throw an exception.
- * 4) dvmJitToInterpSingleStep: use the portable interpreter to execute the
- *    next instruction only and return to pre-specified location in the
- *    compiled code to resume execution. This is mainly used as debugging
- *    feature to bypass problematic opcode implementations without
- *    disturbing the trace formation.
- * 5) dvmJitToTraceSelect: if there is a single exit from a translation that
- *    has already gone hot enough to be translated, we should assume that
- *    the exit point should also be translated (this is a common case for
- *    invokes).  This trace exit will first check for a chaining
- *    opportunity, and if none is available will switch to the debug
- *    interpreter immediately for trace selection (as if threshold had
- *    just been reached).
- * 6) dvmJitToPredictedChain: patch the chaining cell for a virtual call site
- *    to a predicted callee.
- * 7) dvmJitToBackwardBranch: (WITH_SELF_VERIFICATION ONLY) special case of 1)
- *    and 5). This is used instead if the ending branch of the trace jumps back
- *    into the same basic block.
- */
-struct JitToInterpEntries {
-    void *dvmJitToInterpNormal;
-    void *dvmJitToInterpNoChain;
-    void *dvmJitToInterpPunt;
-    void *dvmJitToInterpSingleStep;
-    void *dvmJitToInterpTraceSelectNoChain;
-    void *dvmJitToInterpTraceSelect;
-    void *dvmJitToPatchPredictedChain;
-#if defined(WITH_SELF_VERIFICATION)
-    void *dvmJitToInterpBackwardBranch;
-#endif
-};
-
 /*
  * Size of save area for callee-save FP regs, which are not automatically
  * saved by interpreter main because it doesn't use them (but Jit'd code
@@ -89,114 +33,17 @@ struct JitToInterpEntries {
  */
 #define JIT_CALLEE_SAVE_DOUBLE_COUNT 8
 
-/* Number of entries in the 2nd level JIT profiler filter cache */
-#define JIT_TRACE_THRESH_FILTER_SIZE 32
-/* Number of low dalvik pc address bits to include in 2nd level filter key */
-#define JIT_TRACE_THRESH_FILTER_PC_BITS 4
 #endif
 
 /*
- * Interpreter context, used when switching from one interpreter to
- * another.  We also tuck "mterp" state in here.
+ * Portable interpreter.
  */
-typedef struct InterpState {
-    /*
-     * To make some mterp state updates easier, "pc" and "fp" MUST come
-     * first and MUST appear in this order.
-     */
-    const u2*   pc;                     // program counter
-    u4*         fp;                     // frame pointer
-
-    JValue      retval;                 // return value -- "out" only
-    const Method* method;               // method being executed
-
-
-    /* ----------------------------------------------------------------------
-     * Mterp-only state
-     */
-    DvmDex*         methodClassDex;
-    Thread*         self;
-
-    /* housekeeping */
-    void*           bailPtr;
-
-    /*
-     * These are available globally, from gDvm, or from another glue field
-     * (self/method).  They're copied in here for speed.
-     */
-    /* copy of self->interpStackEnd */
-    const u1*       interpStackEnd;
-    /* points at self->suspendCount */
-    volatile int*   pSelfSuspendCount;
-    /* Biased base of GC's card table */
-    u1*             cardTable;
-    /* points at gDvm.debuggerActive, or NULL if debugger not enabled */
-    volatile u1*    pDebuggerActive;
-    /* points at gDvm.activeProfilers */
-    volatile int*   pActiveProfilers;
-    /* ----------------------------------------------------------------------
-     */
-
-    /*
-     * Interpreter switching.
-     */
-    InterpEntry entryPoint;             // what to do when we start
-    int         nextMode;               // INTERP_STD, INTERP_DBG
-
-#if defined(WITH_JIT)
-    /*
-     * Local copies of field from gDvm placed here for fast access
-     */
-    unsigned char*     pJitProfTable;
-    JitState           jitState;
-    const void*        jitResumeNPC;    // Native PC of compiled code
-    const u2*          jitResumeDPC;    // Dalvik PC corresponding to NPC
-    int                jitThreshold;
-    /*
-     * ppJitProfTable holds the address of gDvmJit.pJitProfTable, which
-     * doubles as an on/off switch for the Jit.  Because a change in
-     * the value of gDvmJit.pJitProfTable isn't reflected in the cached
-     * copy above (pJitProfTable), we need to periodically refresh it.
-     * ppJitProfTable is used for that purpose.
-     */
-    unsigned char**    ppJitProfTable; // Used to refresh pJitProfTable
-    int                icRechainCount; // Count down to next rechain request
-#endif
-
-    bool        debugIsMethodEntry;     // used for method entry event triggers
-#if defined(WITH_TRACKREF_CHECKS)
-    int         debugTrackedRefStart;   // tracked refs from prior invocations
-#endif
-
-#if defined(WITH_JIT)
-    struct JitToInterpEntries jitToInterpEntries;
-
-    int currTraceRun;
-    int totalTraceLen;        // Number of Dalvik insts in trace
-    const u2* currTraceHead;  // Start of the trace we're building
-    const u2* currRunHead;    // Start of run we're building
-    int currRunLen;           // Length of run in 16-bit words
-    int lastThreshFilter;
-    const u2* lastPC;         // Stage the PC first for the threaded interpreter
-    intptr_t threshFilter[JIT_TRACE_THRESH_FILTER_SIZE];
-    JitTraceRun trace[MAX_JIT_RUN_LEN];
-    double calleeSave[JIT_CALLEE_SAVE_DOUBLE_COUNT];
-#endif
-
-} InterpState;
-
-/*
- * These are generated from InterpCore.h.
- */
-extern bool dvmInterpretDbg(Thread* self, InterpState* interpState);
-extern bool dvmInterpretStd(Thread* self, InterpState* interpState);
-#define INTERP_STD 0
-#define INTERP_DBG 1
+extern void dvmInterpretPortable(Thread* self);
 
 /*
  * "mterp" interpreter.
  */
-extern bool dvmMterpStd(Thread* self, InterpState* interpState);
+extern void dvmMterpStd(Thread* self);
 
 /*
  * Get the "this" pointer from the current frame.
@@ -212,13 +59,13 @@ void dvmInterpCheckTrackedRefs(Thread* self, const Method* method,
 /*
  * Process switch statement.
  */
-s4 dvmInterpHandlePackedSwitch(const u2* switchData, s4 testVal);
-s4 dvmInterpHandleSparseSwitch(const u2* switchData, s4 testVal);
+extern "C" s4 dvmInterpHandlePackedSwitch(const u2* switchData, s4 testVal);
+extern "C" s4 dvmInterpHandleSparseSwitch(const u2* switchData, s4 testVal);
 
 /*
  * Process fill-array-data.
  */
-bool dvmInterpHandleFillArrayData(ArrayObject* arrayObject,
+extern "C" bool dvmInterpHandleFillArrayData(ArrayObject* arrayObject,
                                   const u2* arrayData);
 
 /*
@@ -228,10 +75,9 @@ Method* dvmInterpFindInterfaceMethod(ClassObject* thisClass, u4 methodIdx,
     const Method* method, DvmDex* methodClassDex);
 
 /*
- * Determine if the debugger or profiler is currently active.  Used when
- * selecting which interpreter to start or switch to.
+ * Determine if the debugger or profiler is currently active.
  */
-static inline bool dvmDebuggerOrProfilerActive(void)
+static inline bool dvmDebuggerOrProfilerActive()
 {
     return gDvm.debuggerActive || gDvm.activeProfilers != 0;
 }
@@ -243,9 +89,7 @@ static inline bool dvmDebuggerOrProfilerActive(void)
  */
 static inline bool dvmJitDebuggerOrProfilerActive()
 {
-    return gDvmJit.pProfTable != NULL
-        || gDvm.activeProfilers != 0
-        || gDvm.debuggerActive;
+    return (gDvmJit.pProfTable != NULL) || dvmDebuggerOrProfilerActive();
 }
 
 /*
@@ -259,19 +103,6 @@ static inline bool dvmJitHideTranslation()
            (gDvmJit.pProfTable == NULL);
 }
 
-/*
- * The fast and debug interpreter may be doing ping-pong without making forward
- * progress if the same trace building request sent upon entering the fast
- * interpreter is rejected immediately by the debug interpreter. Use the
- * following function to poll the rejection reasons and stay in the debug
- * interpreter until they are cleared. This will guarantee forward progress
- * in the extreme corner cases (eg set compiler threashold to 1).
- */
-static inline bool dvmJitStayInPortableInterpreter()
-{
-    return dvmJitHideTranslation() ||
-           (gDvmJit.compilerQueueLength >= gDvmJit.compilerHighWater);
-}
 #endif
 
-#endif /*_DALVIK_INTERP_DEFS*/
+#endif  // DALVIK_INTERP_DEFS_H_

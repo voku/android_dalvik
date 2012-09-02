@@ -9,48 +9,63 @@
 .LinvokeNative:
     @ Prep for the native call
     @ r1 = newFP, r0 = methodToCall
-    ldr     r3, [rGLUE, #offGlue_self]      @ r3<- glue->self
     mov     r2, #0
-    ldr     r9, [r3, #offThread_jniLocal_topCookie] @ r9<- thread->localRef->...
-    str     r2, [r3, #offThread_inJitCodeCache] @ not in jit code cache
-    str     r1, [r3, #offThread_curFrame]   @ self->curFrame = newFp
+    ldr     r9, [rSELF, #offThread_jniLocal_topCookie]@r9<-thread->localRef->...
+    str     r2, [rSELF, #offThread_inJitCodeCache] @ not in jit code cache
+    str     r1, [rSELF, #offThread_curFrame]   @ curFrame = newFp
     str     r9, [r1, #(offStackSaveArea_localRefCookie - sizeofStackSaveArea)]
                                         @ newFp->localRefCookie=top
-    mov     r9, r3                      @ r9<- glue->self (preserve)
+    ldrh    lr, [rSELF, #offThread_subMode]
     SAVEAREA_FROM_FP(r10, r1)           @ r10<- new stack save area
 
     mov     r2, r0                      @ r2<- methodToCall
     mov     r0, r1                      @ r0<- newFP
-    add     r1, rGLUE, #offGlue_retval  @ r1<- &retval
+    add     r1, rSELF, #offThread_retval  @ r1<- &retval
+    mov     r3, rSELF                   @ arg3<- self
+    ands    lr, #kSubModeMethodTrace
+    beq     121f                        @ hop if not profiling
+    @ r2: methodToCall, r6: rSELF
+    stmfd   sp!, {r2,r6}
+    stmfd   sp!, {r0-r3}
+    mov     r0, r2
+    mov     r1, r6
+    mov     lr, pc
+    ldr     pc, .LdvmFastMethodTraceEnter
+    ldmfd   sp!, {r0-r3}
 
-    LDR_PC_LR "[r2, #offMethod_nativeFunc]"
+    mov     lr, pc
+    ldr     pc, [r2, #offMethod_nativeFunc]
 
-    @ Refresh Jit's on/off status
-    ldr     r3, [rGLUE, #offGlue_ppJitProfTable]
+    ldmfd   sp!, {r0-r1}
+    mov     lr, pc
+    ldr     pc, .LdvmFastNativeMethodTraceExit
+    b       212f
+121:
+    mov     lr, pc
+    ldr     pc, [r2, #offMethod_nativeFunc]
+212:
 
-    @ native return; r9=self, r10=newSaveArea
+    @ native return; r10=newSaveArea
     @ equivalent to dvmPopJniLocals
     ldr     r2, [r10, #offStackSaveArea_returnAddr] @ r2 = chaining cell ret
     ldr     r0, [r10, #offStackSaveArea_localRefCookie] @ r0<- saved->top
-    ldr     r1, [r9, #offThread_exception] @ check for exception
-    ldr     r3, [r3]    @ r1 <- pointer to Jit profile table
-    str     rFP, [r9, #offThread_curFrame]  @ self->curFrame = fp
+    ldr     r1, [rSELF, #offThread_exception] @ check for exception
+    str     rFP, [rSELF, #offThread_curFrame]  @ curFrame = fp
     cmp     r1, #0                      @ null?
-    str     r0, [r9, #offThread_jniLocal_topCookie] @ new top <- old top
+    str     r0, [rSELF, #offThread_jniLocal_topCookie] @ new top <- old top
     ldr     r0, [r10, #offStackSaveArea_savedPc] @ reload rPC
-    str     r3, [rGLUE, #offGlue_pJitProfTable]  @ cache current JitProfTable
 
     @ r0 = dalvikCallsitePC
     bne     .LhandleException           @ no, handle exception
 
-    str     r2, [r9, #offThread_inJitCodeCache] @ set the new mode
+    str     r2, [rSELF, #offThread_inJitCodeCache] @ set the new mode
     cmp     r2, #0                      @ return chaining cell still exists?
     bxne    r2                          @ yes - go ahead
 
     @ continue executing the next instruction through the interpreter
     ldr     r1, .LdvmJitToInterpTraceSelectNoChain @ defined in footer.S
     add     rPC, r0, #6                 @ reconstruct new rPC (advance 6 bytes)
-#if defined(JIT_STATS)
+#if defined(WITH_JIT_TUNING)
     mov     r0, #kCallsiteInterpreted
 #endif
     mov     pc, r1
@@ -65,9 +80,8 @@
 .LdeadFood:
     .word   0xdeadf00d
 #endif
-    ldr     r3, [rGLUE, #offGlue_self]  @ r3<- glue->self
     mov     r2, #0
-    str     r2, [r3, #offThread_inJitCodeCache] @ in interpreter land
+    str     r2, [rSELF, #offThread_inJitCodeCache] @ in interpreter land
     ldr     r1, .LdvmMterpCommonExceptionThrown @ PIC way of getting &func
     ldr     rIBASE, .LdvmAsmInstructionStart    @ same as above
     mov     rPC, r0                 @ reload the faulting Dalvik address
@@ -86,10 +100,22 @@
     .word   dvmMterpCommonExceptionThrown
 .LdvmLockObject:
     .word   dvmLockObject
+.LdvmJitTraceProfilingOff:
+    .word   dvmJitTraceProfilingOff
+#if defined(WITH_JIT_TUNING)
+.LdvmICHitCount:
+    .word   gDvmICHitCount
+#endif
 #if defined(WITH_SELF_VERIFICATION)
 .LdvmSelfVerificationMemOpDecode:
     .word   dvmSelfVerificationMemOpDecode
 #endif
+.LdvmFastMethodTraceEnter:
+    .word   dvmFastMethodTraceEnter
+.LdvmFastNativeMethodTraceExit:
+    .word   dvmFastNativeMethodTraceExit
+.LdvmFastMethodTraceExit:
+    .word   dvmFastMethodTraceExit
 .L__aeabi_cdcmple:
     .word   __aeabi_cdcmple
 .L__aeabi_cfcmple:

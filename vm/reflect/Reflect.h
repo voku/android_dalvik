@@ -16,13 +16,8 @@
 /*
  * Basic reflection calls and utility functions.
  */
-#ifndef _DALVIK_REFLECT_REFLECT
-#define _DALVIK_REFLECT_REFLECT
-
-bool dvmReflectStartup(void);
-bool dvmReflectProxyStartup(void);
-bool dvmReflectAnnotationStartup(void);
-void dvmReflectShutdown(void);
+#ifndef DALVIK_REFLECT_REFLECT_H_
+#define DALVIK_REFLECT_REFLECT_H_
 
 /*
  * During startup, validate the "box" classes, e.g. java/lang/Integer.
@@ -37,6 +32,11 @@ bool dvmValidateBoxClasses();
 ArrayObject* dvmGetDeclaredFields(ClassObject* clazz, bool publicOnly);
 
 /*
+ * Get the named field.
+ */
+Object* dvmGetDeclaredField(ClassObject* clazz, StringObject* nameObj);
+
+/*
  * Get all constructors declared by a class.
  */
 ArrayObject* dvmGetDeclaredConstructors(ClassObject* clazz, bool publicOnly);
@@ -49,6 +49,12 @@ ArrayObject* dvmGetDeclaredConstructors(ClassObject* clazz, bool publicOnly);
  * since those weren't declared in the class, or constructors.
  */
 ArrayObject* dvmGetDeclaredMethods(ClassObject* clazz, bool publicOnly);
+
+/*
+ * Get the named method.
+ */
+Object* dvmGetDeclaredConstructorOrMethod(ClassObject* clazz,
+    StringObject* nameObj, ArrayObject* args);
 
 /*
  * Get all interfaces a class implements. If this is unable to allocate
@@ -77,16 +83,16 @@ int dvmConvertPrimitiveValue(PrimitiveType srcType,
 int dvmConvertArgument(DataObject* arg, ClassObject* type, s4* ins);
 
 /*
- * Create a wrapper object for a primitive data type.  If "returnType" is
+ * Box a primitive value into an object.  If "returnType" is
  * not primitive, this just returns "value" cast to an object.
  */
-DataObject* dvmWrapPrimitive(JValue value, ClassObject* returnType);
+DataObject* dvmBoxPrimitive(JValue value, ClassObject* returnType);
 
 /*
  * Unwrap a boxed primitive.  If "returnType" is not primitive, this just
  * returns "value" cast into a JValue.
  */
-bool dvmUnwrapPrimitive(Object* value, ClassObject* returnType,
+bool dvmUnboxPrimitive(Object* value, ClassObject* returnType,
     JValue* pResult);
 
 /*
@@ -134,6 +140,24 @@ ArrayObject* dvmGetClassAnnotations(const ClassObject* clazz);
 ArrayObject* dvmGetMethodAnnotations(const Method* method);
 ArrayObject* dvmGetFieldAnnotations(const Field* field);
 ArrayObject* dvmGetParameterAnnotations(const Method* method);
+
+/*
+ * Return the annotation if it exists.
+ */
+Object* dvmGetClassAnnotation(const ClassObject* clazz, const ClassObject* annotationClazz);
+Object* dvmGetMethodAnnotation(const ClassObject* clazz, const Method* method,
+        const ClassObject* annotationClazz);
+Object* dvmGetFieldAnnotation(const ClassObject* clazz, const Field* method,
+        const ClassObject* annotationClazz);
+
+/*
+ * Return true if the annotation exists.
+ */
+bool dvmIsClassAnnotationPresent(const ClassObject* clazz, const ClassObject* annotationClazz);
+bool dvmIsMethodAnnotationPresent(const ClassObject* clazz, const Method* method,
+        const ClassObject* annotationClazz);
+bool dvmIsFieldAnnotationPresent(const ClassObject* clazz, const Field* method,
+        const ClassObject* annotationClazz);
 
 /*
  * Find the default value for an annotation member.
@@ -188,23 +212,23 @@ ArrayObject* dvmGetDeclaredClasses(const ClassObject* clazz);
  * Used to pass values out of annotation (and encoded array) processing
  * functions.
  */
-typedef struct AnnotationValue {
+struct AnnotationValue {
     JValue  value;
     u1      type;
-} AnnotationValue;
+};
 
 
 /**
  * Iterator structure for iterating over DexEncodedArray instances. The
  * structure should be treated as opaque.
  */
-typedef struct {
+struct EncodedArrayIterator {
     const u1* cursor;                    /* current cursor */
     u4 elementsLeft;                     /* number of elements left to read */
     const DexEncodedArray* encodedArray; /* instance being iterated over */
     u4 size;                             /* number of elements in instance */
     const ClassObject* clazz;            /* class to resolve with respect to */
-} EncodedArrayIterator;
+};
 
 /**
  * Initializes an encoded array iterator.
@@ -236,4 +260,4 @@ bool dvmEncodedArrayIteratorHasNext(const EncodedArrayIterator* iterator);
 bool dvmEncodedArrayIteratorGetNext(EncodedArrayIterator* iterator,
         AnnotationValue* value);
 
-#endif /*_DALVIK_REFLECT_REFLECT*/
+#endif  // DALVIK_REFLECT_REFLECT_H_

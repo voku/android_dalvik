@@ -16,8 +16,8 @@
 /*
  * Simple linear memory allocator.
  */
-#ifndef _DALVIK_LINEARALLOC
-#define _DALVIK_LINEARALLOC
+#ifndef DALVIK_LINEARALLOC_H_
+#define DALVIK_LINEARALLOC_H_
 
 /*
  * If this is set, we create additional data structures and make many
@@ -30,7 +30,7 @@
  * allocated region, but that would prevent us from sharing the rest of
  * that first page.
  */
-typedef struct LinearAllocHdr {
+struct LinearAllocHdr {
     int     curOffset;          /* offset where next data goes */
     pthread_mutex_t lock;       /* controls updates to this struct */
 
@@ -39,7 +39,7 @@ typedef struct LinearAllocHdr {
     int     firstOffset;        /* for chasing through */
 
     short*  writeRefCount;      /* for ENFORCE_READ_ONLY */
-} LinearAllocHdr;
+};
 
 
 /*
@@ -117,4 +117,4 @@ void dvmLinearAllocDump(Object* classLoader);
  */
 bool dvmLinearAllocContains(const void* start, size_t length);
 
-#endif /*_DALVIK_LINEARALLOC*/
+#endif  // DALVIK_LINEARALLOC_H_

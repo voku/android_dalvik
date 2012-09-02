@@ -1,3 +1,4 @@
+%default { "chaintgt" : ".LinvokeChain" }
     /*
      * For polymorphic callsite, check whether the cached class pointer matches
      * the current one. If so setup the Dalvik frame and return to the
@@ -27,7 +28,22 @@
     ldr     r0, [r2, #8]    @ r0 <- predictedChainCell->method
     ldr     r9, [r2, #12]   @ r9 <- predictedChainCell->counter
     cmp     r3, r8          @ predicted class == actual class?
-    beq     .LinvokeChain   @ predicted chain is valid
+#if defined(WITH_JIT_TUNING)
+    ldr     r7, .LdvmICHitCount
+#if defined(WORKAROUND_CORTEX_A9_745320)
+    /* Don't use conditional loads if the HW defect exists */
+    bne     101f
+    ldr     r10, [r7, #0]
+101:
+#else
+    ldreq   r10, [r7, #0]
+#endif
+    add     r10, r10, #1
+    streq   r10, [r7, #0]
+#endif
+    ldreqh  r7, [r0, #offMethod_registersSize]  @ r7<- methodToCall->regsSize
+    ldreqh  r2, [r0, #offMethod_outsSize]  @ r2<- methodToCall->outsSize
+    beq     $chaintgt   @ predicted chain is valid
     ldr     r7, [r3, #offClassObject_vtable] @ r7 <- this->class->vtable
     sub     r1, r9, #1      @ count--
     str     r1, [r2, #12]   @ write back to PredictedChainingCell->counter

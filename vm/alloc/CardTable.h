@@ -20,8 +20,8 @@
  * WriteBarrier, and from there to here.
  */
 
-#ifndef _DALVIK_ALLOC_CARDTABLE
-#define _DALVIK_ALLOC_CARDTABLE
+#ifndef DALVIK_ALLOC_CARDTABLE_H_
+#define DALVIK_ALLOC_CARDTABLE_H_
 
 #define GC_CARD_SHIFT 7
 #define GC_CARD_SIZE (1 << GC_CARD_SHIFT)
@@ -32,7 +32,7 @@
  * Initializes the card table; must be called before any other
  * dvmCardTable*() functions.
  */
-bool dvmCardTableStartup(void);
+bool dvmCardTableStartup(size_t heapMaximumSize, size_t growthLimit);
 
 /*
  * Tears down the entire CardTable structure.
@@ -56,6 +56,11 @@ u1 *dvmCardFromAddr(const void *addr);
 void *dvmAddrFromCard(const u1 *card);
 
 /*
+ * Returns true if addr points to a valid card.
+ */
+bool dvmIsValidCard(const u1 *card);
+
+/*
  * Set the card associated with the given address to GC_CARD_DIRTY.
  */
 void dvmMarkCard(const void *addr);
@@ -65,4 +70,4 @@ void dvmMarkCard(const void *addr);
  */
 void dvmVerifyCardTable(void);
 
-#endif /*_DALVIK_ALLOC_CARDTABLE*/
+#endif  // DALVIK_ALLOC_CARDTABLE_H_

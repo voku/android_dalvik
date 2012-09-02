@@ -17,14 +17,17 @@
 /*
  * Miscellaneous utility functions.
  */
-#ifndef _DALVIK_MISC
-#define _DALVIK_MISC
+#ifndef DALVIK_MISC_H_
+#define DALVIK_MISC_H_
 
-#include "Inlines.h"
+#include <string>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/time.h>
+
+#include "Inlines.h"
 
 /*
  * Used to shut up the compiler when a parameter isn't used.
@@ -64,7 +67,7 @@ INLINE u4 dvmFloatToU4(float val) {
  *
  * If "tag" is NULL the default tag ("dalvikvm") will be used.
  */
-typedef enum { kHexDumpLocal, kHexDumpMem } HexDumpMode;
+enum HexDumpMode { kHexDumpLocal, kHexDumpMem };
 void dvmPrintHexDumpEx(int priority, const char* tag, const void* vaddr,
     size_t length, HexDumpMode mode);
 
@@ -87,17 +90,19 @@ INLINE void dvmPrintHexDumpDbg(const void* vaddr, size_t length,const char* tag)
 #endif
 }
 
+enum DebugTargetKind {
+    kDebugTargetUnknown = 0,
+    kDebugTargetLog,
+    kDebugTargetFile,
+};
+
 /*
  * We pass one of these around when we want code to be able to write debug
  * info to either the log or to a file (or stdout/stderr).
  */
-typedef struct DebugOutputTarget {
+struct DebugOutputTarget {
     /* where to? */
-    enum {
-        kDebugTargetUnknown = 0,
-        kDebugTargetLog,
-        kDebugTargetFile,
-    } which;
+    DebugTargetKind which;
 
     /* additional bits */
     union {
@@ -109,7 +114,7 @@ typedef struct DebugOutputTarget {
             FILE* fp;
         } file;
     } data;
-} DebugOutputTarget;
+};
 
 /*
  * Fill in a DebugOutputTarget struct.
@@ -128,55 +133,6 @@ void dvmPrintDebugMessage(const DebugOutputTarget* target, const char* format,
 #endif
     ;
 
-
-/*
- * Expanding bitmap, used for tracking resources.  Bits are numbered starting
- * from zero.
- *
- * All operations on a BitVector are unsynchronized.
- */
-typedef struct BitVector {
-    bool    expandable;     /* expand bitmap if we run out? */
-    int     storageSize;    /* current size, in 32-bit words */
-    u4*     storage;
-} BitVector;
-
-/* allocate a bit vector with enough space to hold "startBits" bits */
-BitVector* dvmAllocBitVector(int startBits, bool expandable);
-void dvmFreeBitVector(BitVector* pBits);
-
-/*
- * dvmAllocBit always allocates the first possible bit.  If we run out of
- * space in the bitmap, and it's not marked expandable, dvmAllocBit
- * returns -1.
- *
- * dvmSetBit sets the specified bit, expanding the vector if necessary
- * (and possible).
- *
- * dvmIsBitSet returns "true" if the bit is set.
- */
-int dvmAllocBit(BitVector* pBits);
-bool dvmSetBit(BitVector* pBits, int num);
-void dvmClearBit(BitVector* pBits, int num);
-void dvmClearAllBits(BitVector* pBits);
-bool dvmIsBitSet(const BitVector* pBits, int num);
-
-/* count the number of bits that have been set */
-int dvmCountSetBits(const BitVector* pBits);
-
-/* copy one vector to the other compatible one */
-bool dvmCopyBitVector(BitVector *dest, const BitVector *src);
-
-/*
- * Intersect two bit vectores and merge the result on top of the pre-existing
- * value in the dest vector.
- */
-bool dvmIntersectBitVectors(BitVector *dest, const BitVector *src1,
-                            const BitVector *src2);
-
-#define kBitVectorGrowth    4   /* increase by 4 u4s when limit hit */
-
-
 /*
  * Return a newly-allocated string in which all occurrences of '.' have
  * been changed to '/'.  If we find a '/' in the original string, NULL
@@ -185,18 +141,51 @@ bool dvmIntersectBitVectors(BitVector *dest, const BitVector *src1,
 char* dvmDotToSlash(const char* str);
 
 /*
+ * Return a newly-allocated string containing a human-readable equivalent
+ * of 'descriptor'. So "I" would be "int", "[[I" would be "int[][]",
+ * "[Ljava/lang/String;" would be "java.lang.String[]", and so forth.
+ */
+std::string dvmHumanReadableDescriptor(const char* descriptor);
+
+/**
+ * Returns a human-readable string form of the name of the class of
+ * the given object. So given a java.lang.String, the output would
+ * be "java.lang.String". Given an array of int, the output would be "int[]".
+ * Given String.class, the output would be "java.lang.Class<java.lang.String>".
+ */
+std::string dvmHumanReadableType(const Object* obj);
+
+/**
+ * Returns a human-readable string of the form "package.Class.fieldName".
+ */
+struct Field;
+std::string dvmHumanReadableField(const Field* field);
+
+/**
+ * Returns a human-readable string of the form "package.Class.methodName"
+ * or "package.Class.methodName(Ljava/lang/String;I)V".
+ */
+struct Method;
+std::string dvmHumanReadableMethod(const Method* method, bool withSignature);
+
+/*
  * Return a newly-allocated string for the "dot version" of the class
  * name for the given type descriptor. That is, The initial "L" and
  * final ";" (if any) have been removed and all occurrences of '/'
  * have been changed to '.'.
+ *
+ * "Dot version" names are used in the class loading machinery.
+ * See also dvmHumanReadableDescriptor.
  */
 char* dvmDescriptorToDot(const char* str);
 
 /*
  * Return a newly-allocated string for the type descriptor
  * corresponding to the "dot version" of the given class name. That
- * is, non-array names are surrounde by "L" and ";", and all
+ * is, non-array names are surrounded by "L" and ";", and all
  * occurrences of '.' have been changed to '/'.
+ *
+ * "Dot version" names are used in the class loading machinery.
  */
 char* dvmDotToDescriptor(const char* str);
 
@@ -292,11 +281,12 @@ bool dvmSetCloseOnExec(int fd);
  * get from the abort may point at the wrong call site.  Best to leave
  * it undecorated.
  */
-void dvmAbort(void);
+extern "C" void dvmAbort(void);
+void dvmPrintNativeBackTrace(void);
 
 #if (!HAVE_STRLCPY)
 /* Implementation of strlcpy() for platforms that don't already have it. */
-size_t strlcpy(char *dst, const char *src, size_t size);
+extern "C" size_t strlcpy(char *dst, const char *src, size_t size);
 #endif
 
 /*
@@ -305,6 +295,16 @@ size_t strlcpy(char *dst, const char *src, size_t size);
  *  NULL on failure.
  */
 void *dvmAllocRegion(size_t size, int prot, const char *name);
+
+/*
+ * Get some per-thread stats from /proc/self/task/N/stat.
+ */
+struct ProcStatData {
+    unsigned long utime;    /* number of jiffies scheduled in user mode */
+    unsigned long stime;    /* number of jiffies scheduled in kernel mode */
+    int processor;          /* number of CPU that last executed thread */
+};
+bool dvmGetThreadStats(ProcStatData* pData, pid_t tid);
 
 /*
  * Returns the pointer to the "absolute path" part of the given path
@@ -325,4 +325,21 @@ void *dvmAllocRegion(size_t size, int prot, const char *name);
  */
 const char* dvmPathToAbsolutePortion(const char* path);
 
-#endif /*_DALVIK_MISC*/
+/**
+ * Returns a string corresponding to printf-like formatting of the arguments.
+ */
+std::string StringPrintf(const char* fmt, ...)
+        __attribute__((__format__ (__printf__, 1, 2)));
+
+/**
+ * Appends a printf-like formatting of the arguments to 'dst'.
+ */
+void StringAppendF(std::string* dst, const char* fmt, ...)
+        __attribute__((__format__ (__printf__, 2, 3)));
+
+/**
+ * Appends a printf-like formatting of the arguments to 'dst'.
+ */
+void StringAppendV(std::string* dst, const char* format, va_list ap);
+
+#endif  // DALVIK_MISC_H_

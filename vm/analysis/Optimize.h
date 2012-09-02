@@ -17,19 +17,18 @@
 /*
  * Bytecode optimization declarations.
  */
-#ifndef _DALVIK_OPTIMIZE
-#define _DALVIK_OPTIMIZE
-
-/*
- * Prep data structures.
- */
-InlineSub* dvmCreateInlineSubsTable(void);
-void dvmFreeInlineSubsTable(InlineSub* inlineSubs);
+#ifndef DALVIK_OPTIMIZE_H_
+#define DALVIK_OPTIMIZE_H_
 
 /*
  * Entry point from DEX preparation.
  */
 void dvmOptimizeClass(ClassObject* clazz, bool essentialOnly);
+
+/*
+ * Update a 16-bit code unit.
+ */
+void dvmUpdateCodeUnit(const Method* meth, u2* ptr, u2 newVal);
 
 /*
  * Abbreviated resolution functions, for use by optimization and verification
@@ -45,4 +44,4 @@ InstField* dvmOptResolveInstField(ClassObject* referrer, u4 ifieldIdx,
 StaticField* dvmOptResolveStaticField(ClassObject* referrer, u4 sfieldIdx,
     VerifyError* pFailure);
 
-#endif /*_DALVIK_OPTIMIZE*/
+#endif  // DALVIK_OPTIMIZE_H_

@@ -13,12 +13,8 @@
     mov     r3, #0                       @ Record that we're not returning
     str     r3, [r0, #offThread_inJitCodeCache]
     blx     r2             @ dvmLockObject(self, obj)
-    @ refresh Jit's on/off status & test for exception
-    ldr     r0, [rGLUE, #offGlue_ppJitProfTable]
-    ldr     r1, [rGLUE, #offGlue_self]
-    ldr     r0, [r0]
-    ldr     r1, [r1, #offThread_exception]
-    str     r0, [rGLUE, #offGlue_pJitProfTable]
+    @ test for exception
+    ldr     r1, [rSELF, #offThread_exception]
     cmp     r1, #0
     beq     1f
     ldr     r2, .LhandleException
@@ -26,7 +22,7 @@
     bx      r2
 1:
     @ Bail to interpreter - no chain [note - r4 still contains rPC]
-#if defined(JIT_STATS)
+#if defined(WITH_JIT_TUNING)
     mov     r0, #kHeavyweightMonitor
 #endif
     ldr     pc, .LdvmJitToInterpNoChain

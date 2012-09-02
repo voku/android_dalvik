@@ -18,17 +18,17 @@
  * them directly, except to create the optimized version that we tuck in
  * the cache area.
  */
-#ifndef _DALVIK_RAWDEXFILE
-#define _DALVIK_RAWDEXFILE
+#ifndef DALVIK_RAWDEXFILE_H_
+#define DALVIK_RAWDEXFILE_H_
 
 /*
  * Structure representing a "raw" DEX file, in its unswapped unoptimized
  * state.
  */
-typedef struct RawDexFile {
+struct RawDexFile {
     char*       cacheFileName;
     DvmDex*     pDvmDex;
-} RawDexFile;
+};
 
 /*
  * Open a raw ".dex" file, optimize it, and load it.
@@ -38,6 +38,18 @@ typedef struct RawDexFile {
  */
 int dvmRawDexFileOpen(const char* fileName, const char* odexOutputName,
     RawDexFile** ppDexFile, bool isBootstrap);
+
+/*
+ * Open a raw ".dex" file based on the given chunk of memory, and load
+ * it. The bytes are assumed to be owned by the caller for the
+ * purposes of memory management and further assumed to not be touched
+ * by the caller while the raw dex file remains open. The bytes *may*
+ * be modified as the result of issuing this call.
+ *
+ * On success, returns 0 and sets "*ppDexFile" to a newly-allocated DexFile.
+ * On failure, returns a meaningful error code [currently just -1].
+ */
+int dvmRawDexFileOpenArray(u1* pBytes, u4 length, RawDexFile** ppDexFile);
 
 /*
  * Free a RawDexFile structure, along with any associated structures.
@@ -56,4 +68,4 @@ INLINE const char* dvmGetRawDexFileCacheFileName(RawDexFile* pRawDexFile) {
     return pRawDexFile->cacheFileName;
 }
 
-#endif /*_DALVIK_RAWDEXFILE*/
+#endif  // DALVIK_RAWDEXFILE_H_

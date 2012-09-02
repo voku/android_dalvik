@@ -17,12 +17,11 @@
 /*
  * Stack frames, and uses thereof.
  */
-#ifndef _DALVIK_INTERP_STACK
-#define _DALVIK_INTERP_STACK
+#ifndef DALVIK_INTERP_STACK_H_
+#define DALVIK_INTERP_STACK_H_
 
 #include "jni.h"
 #include <stdarg.h>
-
 
 /*
 Stack layout
@@ -108,7 +107,6 @@ possible to push additional call frames on without calling a method.
 
 
 struct StackSaveArea;
-typedef struct StackSaveArea StackSaveArea;
 
 //#define PAD_SAVE_AREA       /* help debug stack trampling */
 
@@ -130,7 +128,7 @@ struct StackSaveArea {
 #endif
 
     /* saved frame pointer for previous frame, or NULL if this is at bottom */
-    void*       prevFrame;
+    u4*         prevFrame;
 
     /* saved program counter (from method in caller's frame) */
     const u2*   savedPc;
@@ -140,11 +138,7 @@ struct StackSaveArea {
 
     union {
         /* for JNI native methods: bottom of local reference segment */
-#ifdef USE_INDIRECT_REF
         u4          localRefCookie;
-#else
-        Object**    localRefCookie;
-#endif
 
         /* for interpreted methods: saved current PC, for exception stack
          * traces and debugger traces */
@@ -160,7 +154,7 @@ struct StackSaveArea {
 
 /* move between the stack save area and the frame pointer */
 #define SAVEAREA_FROM_FP(_fp)   ((StackSaveArea*)(_fp) -1)
-#define FP_FROM_SAVEAREA(_save) ((void*) ((StackSaveArea*)(_save) +1))
+#define FP_FROM_SAVEAREA(_save) ((u4*) ((StackSaveArea*)(_save) +1))
 
 /* when calling a function, get a pointer to outs[0] */
 #define OUTS_FROM_FP(_fp, _argCount) \
@@ -230,7 +224,7 @@ Object* dvmInvokeMethod(Object* invokeObj, const Method* meth,
  * into the specified method.  Returns -2 for native methods, -1 if no
  * match was found.
  */
-int dvmLineNumFromPC(const Method* method, u4 relPc);
+extern "C" int dvmLineNumFromPC(const Method* method, u4 relPc);
 
 /*
  * Given a frame pointer, compute the current call depth.  The value can be
@@ -267,20 +261,20 @@ ClassObject* dvmGetCaller2Class(const void* curFrame);
 ClassObject* dvmGetCaller3Class(const void* curFrame);
 
 /*
- * Allocate and fill an array of method pointers representing the current
- * stack trace (element 0 is current frame).
+ * Fill an array of method pointers representing the current stack
+ * trace (element 0 is current frame).
  */
-bool dvmCreateStackTraceArray(const void* fp, const Method*** pArray,
-    int* pLength);
+void dvmFillStackTraceArray(const void* fp, const Method** array, size_t length);
 
 /*
  * Common handling for stack overflow.
  */
-void dvmHandleStackOverflow(Thread* self, const Method* method);
-void dvmCleanupStackOverflow(Thread* self, const Object* exception);
+extern "C" void dvmHandleStackOverflow(Thread* self, const Method* method);
+extern "C" void dvmCleanupStackOverflow(Thread* self, const Object* exception);
 
 /* debugging; dvmDumpThread() is probably a better starting point */
 void dvmDumpThreadStack(const DebugOutputTarget* target, Thread* thread);
 void dvmDumpRunningThreadStack(const DebugOutputTarget* target, Thread* thread);
+void dvmDumpNativeStack(const DebugOutputTarget* target, pid_t tid);
 
-#endif /*_DALVIK_INTERP_STACK*/
+#endif  // DALVIK_INTERP_STACK_H_

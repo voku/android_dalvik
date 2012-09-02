@@ -17,17 +17,12 @@
 /*
  * Android's method call profiling goodies.
  */
-#ifndef _DALVIK_PROFILE
-#define _DALVIK_PROFILE
+#ifndef DALVIK_PROFILE_H_
+#define DALVIK_PROFILE_H_
 
 #ifndef NOT_VM      /* for utilities that sneakily include this file */
 
 #include <stdio.h>
-
-/* External allocations are hackish enough that it's worthwhile
- * separating them for possible removal later.
- */
-#define PROFILE_EXTERNAL_ALLOCATIONS 1
 
 struct Thread;      // extern
 
@@ -40,11 +35,7 @@ void dvmProfilingShutdown(void);
  * Method trace state.  This is currently global.  In theory we could make
  * most of this per-thread.
  */
-typedef struct MethodTraceState {
-    /* these are set during VM init */
-    Method* gcMethod;
-    Method* classPrepMethod;
-
+struct MethodTraceState {
     /* active state */
     pthread_mutex_t startStopLock;
     pthread_cond_t  threadExitCond;
@@ -58,7 +49,10 @@ typedef struct MethodTraceState {
     volatile int curOffset;
     u8      startWhen;
     int     overflow;
-} MethodTraceState;
+
+    int     traceVersion;
+    size_t  recordSize;
+};
 
 /*
  * Memory allocation profiler state.  This is used both globally and
@@ -66,7 +60,7 @@ typedef struct MethodTraceState {
  *
  * If you add a field here, zero it out in dvmStartAllocCounting().
  */
-typedef struct AllocProfState {
+struct AllocProfState {
     bool    enabled;            // is allocation tracking enabled?
 
     int     allocCount;         // #of objects allocated
@@ -82,18 +76,7 @@ typedef struct AllocProfState {
 
     int     classInitCount;     // #of initialized classes
     u8      classInitTime;      // cumulative time spent in class init (nsec)
-
-#if PROFILE_EXTERNAL_ALLOCATIONS
-    int     externalAllocCount; // #of calls to dvmTrackExternalAllocation()
-    int     externalAllocSize;  // #of bytes passed to ...ExternalAllocation()
-
-    int     failedExternalAllocCount; // #of times an allocation failed
-    int     failedExternalAllocSize;  // cumulative size of failed allocations
-
-    int     externalFreeCount;  // #of calls to dvmTrackExternalFree()
-    int     externalFreeSize;   // #of bytes passed to ...ExternalFree()
-#endif  // PROFILE_EXTERNAL_ALLOCATIONS
-} AllocProfState;
+};
 
 
 /*
@@ -127,32 +110,26 @@ enum {
 /*
  * Call these when a method enters or exits.
  */
-#define TRACE_METHOD_ENTER(_self, _method)                                 \
+#define TRACE_METHOD_ENTER(_self, _method)                                  \
     do {                                                                    \
-        if (gDvm.activeProfilers != 0) {                                    \
-            if (gDvm.methodTrace.traceEnabled)                              \
-                dvmMethodTraceAdd(_self, _method, METHOD_TRACE_ENTER);      \
-            if (gDvm.emulatorTraceEnableCount != 0)                         \
-                dvmEmitEmulatorTrace(_method, METHOD_TRACE_ENTER);          \
-        }                                                                   \
+        if (_self->interpBreak.ctl.subMode & kSubModeMethodTrace)           \
+            dvmMethodTraceAdd(_self, _method, METHOD_TRACE_ENTER);          \
+        if (_self->interpBreak.ctl.subMode & kSubModeEmulatorTrace)         \
+            dvmEmitEmulatorTrace(_method, METHOD_TRACE_ENTER);              \
     } while(0);
-#define TRACE_METHOD_EXIT(_self, _method)                                  \
+#define TRACE_METHOD_EXIT(_self, _method)                                   \
     do {                                                                    \
-        if (gDvm.activeProfilers != 0) {                                    \
-            if (gDvm.methodTrace.traceEnabled)                              \
-                dvmMethodTraceAdd(_self, _method, METHOD_TRACE_EXIT);       \
-            if (gDvm.emulatorTraceEnableCount != 0)                         \
-                dvmEmitEmulatorTrace(_method, METHOD_TRACE_EXIT);           \
-        }                                                                   \
+        if (_self->interpBreak.ctl.subMode & kSubModeMethodTrace)           \
+            dvmMethodTraceAdd(_self, _method, METHOD_TRACE_EXIT);           \
+        if (_self->interpBreak.ctl.subMode & kSubModeEmulatorTrace)         \
+            dvmEmitEmulatorTrace(_method, METHOD_TRACE_EXIT);               \
     } while(0);
-#define TRACE_METHOD_UNROLL(_self, _method)                                \
+#define TRACE_METHOD_UNROLL(_self, _method)                                 \
     do {                                                                    \
-        if (gDvm.activeProfilers != 0) {                                    \
-            if (gDvm.methodTrace.traceEnabled)                              \
-                dvmMethodTraceAdd(_self, _method, METHOD_TRACE_UNROLL);     \
-            if (gDvm.emulatorTraceEnableCount != 0)                         \
-                dvmEmitEmulatorTrace(_method, METHOD_TRACE_UNROLL);         \
-        }                                                                   \
+        if (_self->interpBreak.ctl.subMode & kSubModeMethodTrace)           \
+            dvmMethodTraceAdd(_self, _method, METHOD_TRACE_UNROLL);         \
+        if (_self->interpBreak.ctl.subMode & kSubModeEmulatorTrace)         \
+            dvmEmitEmulatorTrace(_method, METHOD_TRACE_UNROLL);             \
     } while(0);
 
 void dvmMethodTraceAdd(struct Thread* self, const Method* method, int action);
@@ -162,6 +139,10 @@ void dvmMethodTraceGCBegin(void);
 void dvmMethodTraceGCEnd(void);
 void dvmMethodTraceClassPrepBegin(void);
 void dvmMethodTraceClassPrepEnd(void);
+
+extern "C" void dvmFastMethodTraceEnter(const Method* method, struct Thread* self);
+extern "C" void dvmFastMethodTraceExit(struct Thread* self);
+extern "C" void dvmFastNativeMethodTraceExit(const Method* method, struct Thread* self);
 
 /*
  * Start/stop alloc counting.
@@ -183,7 +164,6 @@ enum {
 };
 
 #define TOKEN_CHAR      '*'
-#define TRACE_VERSION   1
 
 /*
  * Common definitions, shared with the dump tool.
@@ -193,4 +173,4 @@ enum {
 #define METHOD_ACTION(_method)  (((unsigned int)(_method)) & METHOD_ACTION_MASK)
 #define METHOD_COMBINE(_method, _action)    ((_method) | (_action))
 
-#endif /*_DALVIK_PROFILE*/
+#endif  // DALVIK_PROFILE_H_

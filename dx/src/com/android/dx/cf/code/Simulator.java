@@ -22,15 +22,11 @@ import com.android.dx.rop.cst.CstInteger;
 import com.android.dx.rop.cst.CstInterfaceMethodRef;
 import com.android.dx.rop.cst.CstMethodRef;
 import com.android.dx.rop.cst.CstType;
-import com.android.dx.rop.cst.CstUtf8;
 import com.android.dx.rop.type.Prototype;
 import com.android.dx.rop.type.Type;
-import com.android.dx.rop.type.TypeBearer;
 import com.android.dx.rop.code.LocalItem;
 import com.android.dx.util.Hex;
-import com.android.dx.util.IntList;
 
-import java.util.List;
 import java.util.ArrayList;
 
 /**
@@ -126,6 +122,64 @@ public class Simulator {
     private static SimException illegalTos() {
         return new SimException("stack mismatch: illegal " +
                 "top-of-stack for opcode");
+    }
+
+    /**
+     * Returns the required array type for an array load or store
+     * instruction, based on a given implied type and an observed
+     * actual array type.
+     *
+     * <p>The interesting cases here have to do with object arrays,
+     * <code>byte[]</code>s, <code>boolean[]</code>s, and
+     * known-nulls.</p>
+     *
+     * <p>In the case of arrays of objects, we want to narrow the type
+     * to the actual array present on the stack, as long as what is
+     * present is an object type. Similarly, due to a quirk of the
+     * original bytecode representation, the instructions for dealing
+     * with <code>byte[]</code> and <code>boolean[]</code> are
+     * undifferentiated, and we aim here to return whichever one was
+     * actually present on the stack.</p>
+     *
+     * <p>In the case where there is a known-null on the stack where
+     * an array is expected, we just fall back to the implied type of
+     * the instruction. Due to the quirk described above, this means
+     * that source code that uses <code>boolean[]</code> might get
+     * translated surprisingly -- but correctly -- into an instruction
+     * that specifies a <code>byte[]</code>. It will be correct,
+     * because should the code actually execute, it will necessarily
+     * throw a <code>NullPointerException</code>, and it won't matter
+     * what opcode variant is used to achieve that result.</p>
+     *
+     * @param impliedType {@code non-null;} type implied by the
+     * instruction; is <i>not</i> an array type
+     * @param foundArrayType {@code non-null;} type found on the
+     * stack; is either an array type or a known-null
+     * @return {@code non-null;} the array type that should be
+     * required in this context
+     */
+    private static Type requiredArrayTypeFor(Type impliedType,
+            Type foundArrayType) {
+        if (foundArrayType == Type.KNOWN_NULL) {
+            return impliedType.getArrayType();
+        }
+
+        if ((impliedType == Type.OBJECT)
+                && foundArrayType.isArray()
+                && foundArrayType.getComponentType().isReference()) {
+            return foundArrayType;
+        }
+
+        if ((impliedType == Type.BYTE)
+                && (foundArrayType == Type.BOOLEAN_ARRAY)) {
+            /*
+             * Per above, an instruction with implied byte[] is also
+             * allowed to be used on boolean[].
+             */
+            return Type.BOOLEAN_ARRAY;
+        }
+
+        return impliedType.getArrayType();
     }
 
     /**
@@ -256,23 +310,17 @@ public class Simulator {
                 }
                 case ByteOps.IALOAD: {
                     /*
-                     * Change the type (which is to be pushed) to
-                     * reflect the actual component type of the array
-                     * being popped, unless it turns out to be a
-                     * known-null, in which case we just use the type
-                     * implied by the original instruction.
+                     * See comment on requiredArrayTypeFor() for explanation
+                     * about what's going on here.
                      */
                     Type foundArrayType = frame.getStack().peekType(1);
-                    Type requireArrayType;
+                    Type requiredArrayType =
+                        requiredArrayTypeFor(type, foundArrayType);
 
-                    if (foundArrayType != Type.KNOWN_NULL) {
-                        requireArrayType = foundArrayType;
-                        type = foundArrayType.getComponentType();
-                    } else {
-                        requireArrayType = type.getArrayType();
-                    }
+                    // Make type agree with the discovered requiredArrayType.
+                    type = requiredArrayType.getComponentType();
 
-                    machine.popArgs(frame, requireArrayType, Type.INT);
+                    machine.popArgs(frame, requiredArrayType, Type.INT);
                     break;
                 }
                 case ByteOps.IADD:
@@ -308,27 +356,30 @@ public class Simulator {
                 }
                 case ByteOps.IASTORE: {
                     /*
-                     * Change the type (which is the type of the
-                     * element) to reflect the actual component type
-                     * of the array being popped, unless it turns out
-                     * to be a known-null, in which case we just use
-                     * the type implied by the original instruction.
-                     * The category 1 vs. 2 thing here is that, if the
-                     * element type is category 2, we have to skip over
-                     * one extra stack slot to find the array.
+                     * See comment on requiredArrayTypeFor() for
+                     * explanation about what's going on here. In
+                     * addition to that, the category 1 vs. 2 thing
+                     * below is to deal with the fact that, if the
+                     * element type is category 2, we have to skip
+                     * over one extra stack slot to find the array.
                      */
-                    Type foundArrayType =
-                        frame.getStack().peekType(type.isCategory1() ? 2 : 3);
-                    Type requireArrayType;
+                    ExecutionStack stack = frame.getStack();
+                    int peekDepth = type.isCategory1() ? 2 : 3;
+                    Type foundArrayType = stack.peekType(peekDepth);
+                    boolean foundArrayLocal = stack.peekLocal(peekDepth);
 
-                    if (foundArrayType != Type.KNOWN_NULL) {
-                        requireArrayType = foundArrayType;
-                        type = foundArrayType.getComponentType();
-                    } else {
-                        requireArrayType = type.getArrayType();
+                    Type requiredArrayType =
+                        requiredArrayTypeFor(type, foundArrayType);
+
+                    /*
+                     * Make type agree with the discovered requiredArrayType
+                     * if it has local info.
+                     */
+                    if (foundArrayLocal) {
+                        type = requiredArrayType.getComponentType();
                     }
 
-                    machine.popArgs(frame, requireArrayType, Type.INT, type);
+                    machine.popArgs(frame, requiredArrayType, Type.INT, type);
                     break;
                 }
                 case ByteOps.POP2:
@@ -367,8 +418,8 @@ public class Simulator {
                 case ByteOps.DUP_X1: {
                     ExecutionStack stack = frame.getStack();
 
-                    if (! (stack.peekType(0).isCategory1() &&
-                           stack.peekType(1).isCategory1())) {
+                    if (!(stack.peekType(0).isCategory1() &&
+                          stack.peekType(1).isCategory1())) {
                         throw illegalTos();
                     }
 
@@ -452,8 +503,8 @@ public class Simulator {
                 case ByteOps.SWAP: {
                     ExecutionStack stack = frame.getStack();
 
-                    if (! (stack.peekType(0).isCategory1() &&
-                           stack.peekType(1).isCategory1())) {
+                    if (!(stack.peekType(0).isCategory1() &&
+                          stack.peekType(1).isCategory1())) {
                         throw illegalTos();
                     }
 
@@ -486,7 +537,7 @@ public class Simulator {
              * takes care of all the salient cases (types are the same,
              * they're compatible primitive types, etc.).
              */
-            if (! Merger.isPossiblyAssignableFrom(returnType, encountered)) {
+            if (!Merger.isPossiblyAssignableFrom(returnType, encountered)) {
                 throw new SimException("return type mismatch: prototype " +
                         "indicates " + returnType.toHuman() +
                         ", but encountered type " + encountered.toHuman());
@@ -531,6 +582,7 @@ public class Simulator {
                 case ByteOps.ILOAD:
                 case ByteOps.RET: {
                     machine.localArg(frame, idx);
+                    machine.localInfo(local != null);
                     machine.auxType(type);
                     break;
                 }

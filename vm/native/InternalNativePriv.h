@@ -17,8 +17,8 @@
 /*
  * Declarations and definitions common to internal native code.
  */
-#ifndef _DALVIK_NATIVE_INTERNALNATIVEPRIV
-#define _DALVIK_NATIVE_INTERNALNATIVEPRIV
+#ifndef DALVIK_NATIVE_INTERNALNATIVEPRIV_H_
+#define DALVIK_NATIVE_INTERNALNATIVEPRIV_H_
 
 /*
  * Return macros.  Note we use "->i" instead of "->z" for boolean; this
@@ -34,8 +34,20 @@
 #define RETURN_LONG(_val)       do { pResult->j = (_val); return; } while(0)
 #define RETURN_FLOAT(_val)      do { pResult->f = (_val); return; } while(0)
 #define RETURN_DOUBLE(_val)     do { pResult->d = (_val); return; } while(0)
-#define RETURN_PTR(_val)        do { pResult->l = (_val); return; } while(0)
+#define RETURN_PTR(_val)        do { pResult->l = (Object*)(_val); return; } while(0)
 
+/*
+ * Normally a method that has an "inline native" will be invoked using
+ * execute-inline. If the method is invoked via reflection, JNI, or by
+ * virtual dispatch (in the case of String.equals, which we may arrive
+ * at via Object.equals), we need a non-"inline native" implementation.
+ *
+ * This macro is used to implement the native methods that bridge this gap.
+ */
+#define MAKE_INTRINSIC_TRAMPOLINE(INTRINSIC_FN) \
+    extern bool INTRINSIC_FN(u4 arg0, u4 arg1, u4 arg2, u4 arg3, \
+            JValue* pResult); \
+    INTRINSIC_FN(args[0], args[1], args[2], args[3], pResult);
 
 /*
  * Verify that "obj" is non-null and is an instance of "clazz".
@@ -68,25 +80,16 @@ u4 dvmFixMethodFlags(u4 flags);
 void dvmFreeDexOrJar(void* vptr);
 
 /*
- * Determine if "method" is a "privileged" invocation, i.e. is it one
- * of the variations of AccessController.doPrivileged().
- *
- * Because the security stuff pulls in a pile of stuff that we may not
- * want or need, we don't do the class/method lookups at init time, but
- * instead on first use.
- */
-bool dvmIsPrivilegedMethod(const Method* method);
-
-
-/*
  * Tables of methods.
  */
 extern const DalvikNativeMethod dvm_java_lang_Object[];
 extern const DalvikNativeMethod dvm_java_lang_Class[];
+extern const DalvikNativeMethod dvm_java_lang_Double[];
+extern const DalvikNativeMethod dvm_java_lang_Float[];
+extern const DalvikNativeMethod dvm_java_lang_Math[];
 extern const DalvikNativeMethod dvm_java_lang_Runtime[];
 extern const DalvikNativeMethod dvm_java_lang_String[];
 extern const DalvikNativeMethod dvm_java_lang_System[];
-extern const DalvikNativeMethod dvm_java_lang_SystemProperties[];
 extern const DalvikNativeMethod dvm_java_lang_Throwable[];
 extern const DalvikNativeMethod dvm_java_lang_VMClassLoader[];
 extern const DalvikNativeMethod dvm_java_lang_VMThread[];
@@ -96,8 +99,8 @@ extern const DalvikNativeMethod dvm_java_lang_reflect_Constructor[];
 extern const DalvikNativeMethod dvm_java_lang_reflect_Field[];
 extern const DalvikNativeMethod dvm_java_lang_reflect_Method[];
 extern const DalvikNativeMethod dvm_java_lang_reflect_Proxy[];
-extern const DalvikNativeMethod dvm_java_security_AccessController[];
 extern const DalvikNativeMethod dvm_java_util_concurrent_atomic_AtomicLong[];
+extern const DalvikNativeMethod dvm_dalvik_bytecode_OpcodeInfo[];
 extern const DalvikNativeMethod dvm_dalvik_system_SamplingProfiler[];
 extern const DalvikNativeMethod dvm_dalvik_system_VMDebug[];
 extern const DalvikNativeMethod dvm_dalvik_system_DexFile[];
@@ -109,4 +112,4 @@ extern const DalvikNativeMethod dvm_org_apache_harmony_dalvik_ddmc_DdmVmInternal
 extern const DalvikNativeMethod dvm_org_apache_harmony_dalvik_NativeTestTarget[];
 extern const DalvikNativeMethod dvm_sun_misc_Unsafe[];
 
-#endif /*_DALVIK_NATIVE_INTERNALNATIVEPRIV*/
+#endif  // DALVIK_NATIVE_INTERNALNATIVEPRIV_H_

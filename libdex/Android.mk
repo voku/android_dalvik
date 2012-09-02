@@ -15,21 +15,23 @@
 LOCAL_PATH:= $(call my-dir)
 
 dex_src_files := \
-	CmdUtils.c \
-	DexCatch.c \
-	DexClass.c \
-	DexDataMap.c \
-	DexFile.c \
-	DexInlines.c \
-	DexOptData.c \
-	DexProto.c \
-	DexSwapVerify.c \
-	InstrUtils.c \
-	Leb128.c \
-	OpCodeNames.c \
-	OptInvocation.c \
-	SysUtil.c \
-	ZipArchive.c
+	CmdUtils.cpp \
+	DexCatch.cpp \
+	DexClass.cpp \
+	DexDataMap.cpp \
+	DexDebugInfo.cpp \
+	DexFile.cpp \
+	DexInlines.cpp \
+	DexOptData.cpp \
+	DexOpcodes.cpp \
+	DexProto.cpp \
+	DexSwapVerify.cpp \
+	DexUtf.cpp \
+	InstrUtils.cpp \
+	Leb128.cpp \
+	OptInvocation.cpp \
+	SysUtil.cpp \
+	ZipArchive.cpp
 
 dex_include_files := \
 	dalvik \
@@ -45,25 +47,13 @@ dex_include_files := \
 ifneq ($(SDK_ONLY),true)  # SDK_only doesn't need device version
 
 include $(CLEAR_VARS)
-
-# Make a debugging version when building the simulator (if not told
-# otherwise) and when explicitly asked.
-dvm_make_debug_vm := false
-ifeq ($(strip $(DEBUG_DALVIK_VM)),)
-  ifeq ($(dvm_simulator),true)
-    dvm_make_debug_vm := true
-  endif
-else
-  dvm_make_debug_vm := $(DEBUG_DALVIK_VM)
+#LOCAL_CFLAGS += -UNDEBUG -DDEBUG=1
+ifneq ($(findstring -O3, $(TARGET_GLOBAL_CFLAGS)),)
+# Workaround for https://bugs.launchpad.net/linaro-android/+bug/948255
+LOCAL_CFLAGS += -O2
 endif
-
 LOCAL_SRC_FILES := $(dex_src_files)
 LOCAL_C_INCLUDES += $(dex_include_files)
-LOCAL_CFLAGS += -include "dalvikdefines.h"
-ifeq ($(dvm_make_debug_vm),false)
-  # hide ELF symbols to reduce code size
-  LOCAL_CFLAGS += -fvisibility=hidden
-endif
 LOCAL_MODULE_TAGS := optional
 LOCAL_MODULE := libdex
 include $(BUILD_STATIC_LIBRARY)
@@ -77,9 +67,8 @@ endif # !SDK_ONLY
 ##
 ##
 include $(CLEAR_VARS)
-LOCAL_SRC_FILES := $(dex_src_files) sha1.c
+LOCAL_SRC_FILES := $(dex_src_files) sha1.cpp
 LOCAL_C_INCLUDES += $(dex_include_files)
 LOCAL_MODULE_TAGS := optional
-LOCAL_CFLAGS += -include "dalvikdefines.h"
 LOCAL_MODULE := libdex
 include $(BUILD_HOST_STATIC_LIBRARY)

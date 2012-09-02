@@ -26,8 +26,7 @@ build system is assumed.
 <p>
 The native code in the core libraries (chiefly <code>libcore</code>,
 but also <code>dalvik/vm/native</code>) is written in C/C++ and is expected
-to work without modification in a Linux environment.  Much of the code
-comes directly from the Apache Harmony project.
+to work without modification in a Linux environment.
 </p><p>
 The core libraries pull in code from many other projects, including
 OpenSSL, zlib, and ICU.  These will also need to be ported before the VM
@@ -165,6 +164,9 @@ source files.
 <li>Make sure <code>dalvik/vm/Android.mk</code> will find the files for
 your architecture.  If <code>$(TARGET_ARCH)</code> is configured this
 will happen automatically.
+<li>Disable the Dalvik JIT.  You can do this in the general device
+configuration, or by editing the initialization of WITH_JIT in
+<code>dalvik/vm/Dvm.mk</code> to always be <code>false</code>.
 </ol>
 </p><p>
 You now have the basic framework in place.  Whenever you make a change, you
@@ -178,7 +180,7 @@ of the files in <code>dalvik/vm/mterp/out</code> by executing
 in assembly.
 <li>In the <code>dalvik</code> directory, regenerate the
 <code>libdvm.so</code> library with <code>mm</code>.  You can also use
-<code>make libdvm</code> from the top of the tree.
+<code>mmm dalvik/vm</code> from the top of the tree.
 </ol>
 </p><p>
 This will leave you with an updated libdvm.so, which can be pushed out to
@@ -234,15 +236,15 @@ or <code>x86</code> directories for working examples.
 </p><p>
 If you're working on a variation of an existing architecture, you may be
 able to use most of the existing code and just provide replacements for
-a few instructions.  Look at the <code>armv4t</code> implementation as
-an example.
+a few instructions.  Look at the <code>vm/mterp/config-*</code> files
+for examples.
 </p>
 
 
 <h3>Replacing Stubs</h3>
 
 <p>
-There are roughly 230 Dalvik opcodes, including some that are inserted by
+There are roughly 250 Dalvik opcodes, including some that are inserted by
 <a href="dexopt.html">dexopt</a> and aren't described in the
 <a href="dalvik-bytecode.html">Dalvik bytecode</a> documentation.  Each
 one must perform the appropriate actions, fetch the next opcode, and
@@ -347,6 +349,22 @@ At some point you need to ensure that debuggers and profiling work with
 your interpreter.  The easiest way to do this is to simply connect a
 debugger or toggle profiling.  (A future test suite may include some
 tests for this.)
+</p>
+
+
+<h2>Other Performance Issues</h2>
+
+<p>
+The <code>System.arraycopy()</code> function is heavily used.  The
+implementation relies on the bionic C library to provide a fast,
+platform-optimized data copy function for arrays with elements wider
+than one byte.  If you're not using bionic, or your platform does not
+have an implementation of this method, Dalvik will use correct but
+sub-optimal algorithms instead.  For best performance you will want
+to provide your own version.
+</p><p>
+See the comments in <code>dalvik/vm/native/java_lang_System.c</code>
+for details.
 </p>
 
 <p>

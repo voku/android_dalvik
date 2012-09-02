@@ -17,8 +17,8 @@
 /*
  * Some declarations used throughout mterp.
  */
-#ifndef _DALVIK_MTERP_MTERP
-#define _DALVIK_MTERP_MTERP
+#ifndef DALVIK_MTERP_MTERP_H_
+#define DALVIK_MTERP_MTERP_H_
 
 #include "Dalvik.h"
 #include "interp/InterpDefs.h"
@@ -27,17 +27,10 @@
 #endif
 
 /*
- * Interpreter state, passed into C functions from assembly stubs.  The
- * assembly code exports all registers into the "glue" structure before
- * calling, then extracts them when the call returns.
- */
-typedef InterpState MterpGlue;
-
-/*
  * Call this during initialization to verify that the values in asm-constants.h
  * are still correct.
  */
-bool dvmCheckAsmConstants(void);
+extern "C" bool dvmCheckAsmConstants(void);
 
 /*
  * Local entry and exit points.  The platform-specific implementation must
@@ -49,7 +42,13 @@ bool dvmCheckAsmConstants(void);
  *
  * The "mterp" interpreter is always "standard".
  */
-bool dvmMterpStdRun(MterpGlue* glue);
-void dvmMterpStdBail(MterpGlue* glue, bool changeInterp);
+extern "C" bool dvmMterpStdRun(Thread* self);
+extern "C" void dvmMterpStdBail(Thread* self, bool changeInterp);
 
-#endif /*_DALVIK_MTERP_MTERP*/
+/*
+ * Helper for common_printMethod(), invoked from the assembly
+ * interpreter.
+ */
+extern "C" void dvmMterpPrintMethod(Method* method);
+
+#endif  // DALVIK_MTERP_MTERP_H_

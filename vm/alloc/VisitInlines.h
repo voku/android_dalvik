@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _DALVIK_ALLOC_VISITINLINES
-#define _DALVIK_ALLOC_VISITINLINES
+#ifndef DALVIK_ALLOC_VISITINLINES_H_
+#define DALVIK_ALLOC_VISITINLINES_H_
 
 /*
  * Visits the instance fields of a class or data object.
@@ -30,18 +30,18 @@ static void visitFields(Visitor *visitor, Object *obj, void *arg)
         while (refOffsets != 0) {
             size_t rshift = CLZ(refOffsets);
             size_t offset = CLASS_OFFSET_FROM_CLZ(rshift);
-            Object **ref = BYTE_OFFSET(obj, offset);
+            Object **ref = (Object **)BYTE_OFFSET(obj, offset);
             (*visitor)(ref, arg);
             refOffsets &= ~(CLASS_HIGH_BIT >> rshift);
         }
     } else {
-        ClassObject *clazz;
-        for (clazz = obj->clazz; clazz != NULL; clazz = clazz->super) {
+        for (ClassObject *clazz = obj->clazz;
+             clazz != NULL;
+             clazz = clazz->super) {
             InstField *field = clazz->ifields;
-            int i;
-            for (i = 0; i < clazz->ifieldRefCount; ++i, ++field) {
+            for (int i = 0; i < clazz->ifieldRefCount; ++i, ++field) {
                 size_t offset = field->byteOffset;
-                Object **ref = BYTE_OFFSET(obj, offset);
+                Object **ref = (Object **)BYTE_OFFSET(obj, offset);
                 (*visitor)(ref, arg);
             }
         }
@@ -54,12 +54,10 @@ static void visitFields(Visitor *visitor, Object *obj, void *arg)
 static void visitStaticFields(Visitor *visitor, ClassObject *clazz,
                               void *arg)
 {
-    int i;
-
     assert(visitor != NULL);
     assert(clazz != NULL);
-    for (i = 0; i < clazz->sfieldCount; ++i) {
-        char ch = clazz->sfields[i].field.signature[0];
+    for (int i = 0; i < clazz->sfieldCount; ++i) {
+        char ch = clazz->sfields[i].signature[0];
         if (ch == '[' || ch == 'L') {
             (*visitor)(&clazz->sfields[i].value.l, arg);
         }
@@ -72,11 +70,9 @@ static void visitStaticFields(Visitor *visitor, ClassObject *clazz,
 static void visitInterfaces(Visitor *visitor, ClassObject *clazz,
                             void *arg)
 {
-    int i;
-
     assert(visitor != NULL);
     assert(clazz != NULL);
-    for (i = 0; i < clazz->interfaceCount; ++i) {
+    for (int i = 0; i < clazz->interfaceCount; ++i) {
         (*visitor)(&clazz->interfaces[i], arg);
     }
 }
@@ -86,27 +82,25 @@ static void visitInterfaces(Visitor *visitor, ClassObject *clazz,
  */
 static void visitClassObject(Visitor *visitor, Object *obj, void *arg)
 {
-    ClassObject *classObj;
-    ClassStatus status;
+    ClassObject *asClass;
 
     assert(visitor != NULL);
     assert(obj != NULL);
     assert(obj->clazz != NULL);
     assert(!strcmp(obj->clazz->descriptor, "Ljava/lang/Class;"));
-    classObj = (ClassObject *)obj;
     (*visitor)(&obj->clazz, arg);
-    if (IS_CLASS_FLAG_SET(classObj, CLASS_ISARRAY)) {
-        (*visitor)(&classObj->elementClass, arg);
+    asClass = (ClassObject *)obj;
+    if (IS_CLASS_FLAG_SET(asClass, CLASS_ISARRAY)) {
+        (*visitor)(&asClass->elementClass, arg);
     }
-    status = classObj->status;
-    if (status > CLASS_IDX) {
-        (*visitor)(&classObj->super, arg);
+    if (asClass->status > CLASS_IDX) {
+        (*visitor)(&asClass->super, arg);
     }
-    (*visitor)(&classObj->classLoader, arg);
+    (*visitor)(&asClass->classLoader, arg);
     visitFields(visitor, obj, arg);
-    visitStaticFields(visitor, classObj, arg);
-    if (status > CLASS_IDX) {
-        visitInterfaces(visitor, classObj, arg);
+    visitStaticFields(visitor, asClass, arg);
+    if (asClass->status > CLASS_IDX) {
+      visitInterfaces(visitor, asClass, arg);
     }
 }
 
@@ -122,9 +116,8 @@ static void visitArrayObject(Visitor *visitor, Object *obj, void *arg)
     (*visitor)(&obj->clazz, arg);
     if (IS_CLASS_FLAG_SET(obj->clazz, CLASS_ISOBJECTARRAY)) {
         ArrayObject *array = (ArrayObject *)obj;
-        Object **contents = (Object **)array->contents;
-        size_t i;
-        for (i = 0; i < array->length; ++i) {
+        Object **contents = (Object **)(void *)array->contents;
+        for (size_t i = 0; i < array->length; ++i) {
             (*visitor)(&contents[i], arg);
         }
     }
@@ -154,7 +147,7 @@ static void visitReferenceObject(Visitor *visitor, Object *obj, void *arg)
     assert(obj->clazz != NULL);
     visitDataObject(visitor, obj, arg);
     size_t offset = gDvm.offJavaLangRefReference_referent;
-    Object **ref = BYTE_OFFSET(obj, offset);
+    Object **ref = (Object **)BYTE_OFFSET(obj, offset);
     (*visitor)(ref, arg);
 }
 
@@ -166,7 +159,7 @@ static void visitObject(Visitor *visitor, Object *obj, void *arg)
     assert(visitor != NULL);
     assert(obj != NULL);
     assert(obj->clazz != NULL);
-    if (obj->clazz == gDvm.classJavaLangClass) {
+    if (dvmIsClassObject(obj)) {
         visitClassObject(visitor, obj, arg);
     } else if (IS_CLASS_FLAG_SET(obj->clazz, CLASS_ISARRAY)) {
         visitArrayObject(visitor, obj, arg);
@@ -177,4 +170,4 @@ static void visitObject(Visitor *visitor, Object *obj, void *arg)
     }
 }
 
-#endif /* _DALVIK_ALLOC_VISITINLINES */
+#endif  // DALVIK_ALLOC_VISITINLINES_H_

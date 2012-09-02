@@ -5,31 +5,25 @@
      */
     /* shl-long/2addr vA, vB */
     /* ecx gets shift count */
-    /* Need to spill edx */
-    /* rINST gets AA */
-    movzbl    rINST_HI,%ecx             # ecx<- BA
-    movzbl    rINST_HI,rINST_FULL       # rINST_HI<- BA
-    andb      $$0xf,rINST_LO            # rINST_FULL<- A
-    GET_VREG_WORD(%eax,rINST_FULL,0)    # eax<- v[AA+0]
-    sarl      $$4,%ecx                  # ecx<- B
-    SPILL(rPC)
-    GET_VREG_WORD(%edx,rINST_FULL,1)    # edx<- v[AA+1]
-    GET_VREG(%ecx,%ecx)                 # ecx<- vBB
-    shrdl     %edx,%eax
-    shrl      %cl,%edx
+    /* Need to spill rIBASE */
+    /* rINSTw gets AA */
+    movzbl    rINSTbl,%ecx             # ecx<- BA
+    andb      $$0xf,rINSTbl            # rINST<- A
+    GET_VREG_WORD %eax rINST 0         # eax<- v[AA+0]
+    sarl      $$4,%ecx                 # ecx<- B
+    SPILL(rIBASE)
+    GET_VREG_WORD rIBASE rINST 1       # rIBASE<- v[AA+1]
+    GET_VREG_R %ecx %ecx               # ecx<- vBB
+    shrdl     rIBASE,%eax
+    shrl      %cl,rIBASE
     testb     $$32,%cl
     je        2f
-    movl      %edx,%eax
-    xorl      %edx,%edx
+    movl      rIBASE,%eax
+    xorl      rIBASE,rIBASE
 2:
-    SET_VREG_WORD(%edx,rINST_FULL,1)   # v[AA+1]<- edx
-    UNSPILL(rPC)
-    jmp       .L${opcode}_finish
-%break
-
-
-.L${opcode}_finish:
-    SET_VREG_WORD(%eax,rINST_FULL,0)   # v[AA+0]<- eax
-    FETCH_INST_WORD(1)
-    ADVANCE_PC(1)
-    GOTO_NEXT
+    SET_VREG_WORD rIBASE rINST 1       # v[AA+1]<- rIBASE
+    FETCH_INST_OPCODE 1 %ecx
+    UNSPILL(rIBASE)
+    SET_VREG_WORD %eax rINST 0         # v[AA+0]<- eax
+    ADVANCE_PC 1
+    GOTO_NEXT_R %ecx

@@ -28,11 +28,11 @@
  *
  * All memory-mapped structures are 32-bit aligned unless otherwise noted.
  */
-#ifndef _LIBDEX_CMDUTILS
-#define _LIBDEX_CMDUTILS
+#ifndef LIBDEX_CMDUTILS_H_
+#define LIBDEX_CMDUTILS_H_
 
 /* encode the result of unzipping to a file */
-typedef enum UnzipToFileResult {
+enum UnzipToFileResult {
     kUTFRSuccess = 0,
     kUTFRGenericFailure,
     kUTFRBadArgs,
@@ -40,7 +40,7 @@ typedef enum UnzipToFileResult {
     kUTFRNoClassesDex,
     kUTFROutputFileProblem,
     kUTFRBadZip,
-} UnzipToFileResult;
+};
 
 /*
  * Map the specified DEX file read-only (possibly after expanding it into a
@@ -70,4 +70,4 @@ UnzipToFileResult dexOpenAndMap(const char* fileName, const char* tempFileName,
 UnzipToFileResult dexUnzipToFile(const char* zipFileName,
     const char* outFileName, bool quiet);
 
-#endif /*_LIBDEX_CMDUTILS*/
+#endif  // LIBDEX_CMDUTILS_H_

@@ -16,8 +16,8 @@
 /*
  * Class loader.
  */
-#ifndef _DALVIK_OO_CLASS
-#define _DALVIK_OO_CLASS
+#ifndef DALVIK_OO_CLASS_H_
+#define DALVIK_OO_CLASS_H_
 
 /*
  * The classpath and bootclasspath differ in that only the latter is
@@ -26,26 +26,26 @@
  * look for optional packages (a/k/a standard extensions), and then try
  * the classpath.
  *
- * In Dalvik, a class can be found in one of three ways:
- *  - as a "loose" .class file in a directory
- *  - as a .class file held in a JAR archive
+ * In Dalvik, a class can be found in one of two ways:
  *  - in a .dex file
+ *  - in a .dex file named specifically "classes.dex", which is held
+ *    inside a jar file
  *
- * These three may be freely intermixed in a classpath specification.
- * Ordering is significant.  (Currently only ".dex" is supported directly
- * by the VM.)
+ * These two may be freely intermixed in a classpath specification.
+ * Ordering is significant.
  */
-typedef struct ClassPathEntry {
-    enum {
-        kCpeUnknown = 0,
-        kCpeDir,
-        kCpeJar,
-        kCpeDex,
-        kCpeLastEntry       /* used as sentinel at end of array */
-    }       kind;
+enum ClassPathEntryKind {
+    kCpeUnknown = 0,
+    kCpeJar,
+    kCpeDex,
+    kCpeLastEntry       /* used as sentinel at end of array */
+};
+
+struct ClassPathEntry {
+    ClassPathEntryKind kind;
     char*   fileName;
     void*   ptr;            /* JarFile* or DexFile* */
-} ClassPathEntry;
+};
 
 bool dvmClassStartup(void);
 void dvmClassShutdown(void);
@@ -67,6 +67,13 @@ bool dvmClassPathContains(const ClassPathEntry* cpe, const char* path);
  * Set clazz->serialNumber to the next available value.
  */
 void dvmSetClassSerialNumber(ClassObject* clazz);
+
+/*
+ * Find the class object representing the primitive type with the
+ * given descriptor. This returns NULL if the given type character
+ * is invalid.
+ */
+ClassObject* dvmFindPrimitiveClass(char type);
 
 /*
  * Find the class with the given descriptor.  Load it if it hasn't already
@@ -121,7 +128,7 @@ bool dvmIsClassInitializing(const ClassObject* clazz);
 /*
  * Initialize a class.
  */
-bool dvmInitClass(ClassObject* clazz);
+extern "C" bool dvmInitClass(ClassObject* clazz);
 
 /*
  * Retrieve the system class loader.
@@ -170,10 +177,6 @@ void dvmDumpClass(const ClassObject* clazz, int flags);
 void dvmDumpAllClasses(int flags);
 void dvmDumpLoaderStats(const char* msg);
 int  dvmGetNumLoadedClasses();
-
-#ifdef PROFILE_FIELD_ACCESS
-void dvmDumpFieldAccessCounts(void);
-#endif
 
 /* flags for dvmDumpClass / dvmDumpAllClasses */
 #define kDumpClassFullDetail    1
@@ -278,4 +281,4 @@ int dvmCompareNameDescriptorAndMethod(const char* name,
  */
 size_t dvmClassObjectSize(const ClassObject *clazz);
 
-#endif /*_DALVIK_OO_CLASS*/
+#endif  // DALVIK_OO_CLASS_H_

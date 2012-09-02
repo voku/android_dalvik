@@ -16,15 +16,26 @@
 
 package com.android.dx.dex.code;
 
+import com.android.dx.io.OpcodeInfo;
+import com.android.dx.io.Opcodes;
+
 /**
  * Representation of an opcode.
  */
 public final class Dop {
-    /** DalvOps.MIN_VALUE..DalvOps.MAX_VALUE; the opcode value itself */
+    /** {@code Opcodes.isValid();} the opcode value itself */
     private final int opcode;
 
-    /** DalvOps.MIN_VALUE..DalvOps.MAX_VALUE; the opcode family */
+    /** {@code Opcodes.isValid();} the opcode family */
     private final int family;
+
+    /**
+     * {@code Opcodes.isValid();} what opcode (by number) to try next
+     * when attempting to match an opcode to particular arguments;
+     * {@code Opcodes.NO_NEXT} to indicate that this is the last
+     * opcode to try in a particular chain
+     */
+    private final int nextOpcode;
 
     /** {@code non-null;} the instruction format */
     private final InsnFormat format;
@@ -32,55 +43,55 @@ public final class Dop {
     /** whether this opcode uses a result register */
     private final boolean hasResult;
 
-    /** {@code non-null;} the name */
-    private final String name;
-
     /**
      * Constructs an instance.
      *
-     * @param opcode {@code DalvOps.MIN_VALUE..DalvOps.MAX_VALUE;} the opcode
-     * value itself
-     * @param family {@code DalvOps.MIN_VALUE..DalvOps.MAX_VALUE;} the opcode family
+     * @param opcode {@code Opcodes.isValid();} the opcode value
+     * itself
+     * @param family {@code Opcodes.isValid();} the opcode family
+     * @param nextOpcode {@code Opcodes.isValid();} what opcode (by
+     * number) to try next when attempting to match an opcode to
+     * particular arguments; {@code Opcodes.NO_NEXT} to indicate that
+     * this is the last opcode to try in a particular chain
      * @param format {@code non-null;} the instruction format
      * @param hasResult whether the opcode has a result register; if so it
      * is always the first register
-     * @param name {@code non-null;} the name
      */
-    public Dop(int opcode, int family, InsnFormat format,
-               boolean hasResult, String name) {
-        if ((opcode < DalvOps.MIN_VALUE) || (opcode > DalvOps.MAX_VALUE)) {
+    public Dop(int opcode, int family, int nextOpcode, InsnFormat format,
+            boolean hasResult) {
+        if (!Opcodes.isValidShape(opcode)) {
             throw new IllegalArgumentException("bogus opcode");
         }
 
-        if ((family < DalvOps.MIN_VALUE) || (family > DalvOps.MAX_VALUE)) {
+        if (!Opcodes.isValidShape(family)) {
             throw new IllegalArgumentException("bogus family");
+        }
+
+        if (!Opcodes.isValidShape(nextOpcode)) {
+            throw new IllegalArgumentException("bogus nextOpcode");
         }
 
         if (format == null) {
             throw new NullPointerException("format == null");
         }
 
-        if (name == null) {
-            throw new NullPointerException("name == null");
-        }
-
         this.opcode = opcode;
         this.family = family;
+        this.nextOpcode = nextOpcode;
         this.format = format;
         this.hasResult = hasResult;
-        this.name = name;
     }
 
     /** {@inheritDoc} */
     @Override
     public String toString() {
-        return name;
+        return getName();
     }
 
     /**
      * Gets the opcode value.
      *
-     * @return {@code DalvOps.MIN_VALUE..DalvOps.MAX_VALUE;} the opcode value
+     * @return {@code Opcodes.MIN_VALUE..Opcodes.MAX_VALUE;} the opcode value
      */
     public int getOpcode() {
         return opcode;
@@ -90,7 +101,7 @@ public final class Dop {
      * Gets the opcode family. The opcode family is the unmarked (no
      * "/...") opcode that has equivalent semantics to this one.
      *
-     * @return {@code DalvOps.MIN_VALUE..DalvOps.MAX_VALUE;} the opcode family
+     * @return {@code Opcodes.MIN_VALUE..Opcodes.MAX_VALUE;} the opcode family
      */
     public int getFamily() {
         return family;
@@ -120,7 +131,19 @@ public final class Dop {
      * @return {@code non-null;} the opcode name
      */
     public String getName() {
-        return name;
+        return OpcodeInfo.getName(opcode);
+    }
+
+    /**
+     * Gets the opcode value to try next when attempting to match an
+     * opcode to particular arguments. This returns {@code
+     * Opcodes.NO_NEXT} to indicate that this is the last opcode to
+     * try in a particular chain.
+     *
+     * @return {@code Opcodes.MIN_VALUE..Opcodes.MAX_VALUE;} the opcode value
+     */
+    public int getNextOpcode() {
+        return nextOpcode;
     }
 
     /**
@@ -131,18 +154,18 @@ public final class Dop {
      */
     public Dop getOppositeTest() {
         switch (opcode) {
-            case DalvOps.IF_EQ:  return Dops.IF_NE;
-            case DalvOps.IF_NE:  return Dops.IF_EQ;
-            case DalvOps.IF_LT:  return Dops.IF_GE;
-            case DalvOps.IF_GE:  return Dops.IF_LT;
-            case DalvOps.IF_GT:  return Dops.IF_LE;
-            case DalvOps.IF_LE:  return Dops.IF_GT;
-            case DalvOps.IF_EQZ: return Dops.IF_NEZ;
-            case DalvOps.IF_NEZ: return Dops.IF_EQZ;
-            case DalvOps.IF_LTZ: return Dops.IF_GEZ;
-            case DalvOps.IF_GEZ: return Dops.IF_LTZ;
-            case DalvOps.IF_GTZ: return Dops.IF_LEZ;
-            case DalvOps.IF_LEZ: return Dops.IF_GTZ;
+            case Opcodes.IF_EQ:  return Dops.IF_NE;
+            case Opcodes.IF_NE:  return Dops.IF_EQ;
+            case Opcodes.IF_LT:  return Dops.IF_GE;
+            case Opcodes.IF_GE:  return Dops.IF_LT;
+            case Opcodes.IF_GT:  return Dops.IF_LE;
+            case Opcodes.IF_LE:  return Dops.IF_GT;
+            case Opcodes.IF_EQZ: return Dops.IF_NEZ;
+            case Opcodes.IF_NEZ: return Dops.IF_EQZ;
+            case Opcodes.IF_LTZ: return Dops.IF_GEZ;
+            case Opcodes.IF_GEZ: return Dops.IF_LTZ;
+            case Opcodes.IF_GTZ: return Dops.IF_LEZ;
+            case Opcodes.IF_LEZ: return Dops.IF_GTZ;
         }
 
         throw new IllegalArgumentException("bogus opcode: " + this);

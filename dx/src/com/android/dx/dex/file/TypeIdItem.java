@@ -16,8 +16,9 @@
 
 package com.android.dx.dex.file;
 
+import com.android.dx.dex.SizeOf;
 import com.android.dx.rop.cst.CstType;
-import com.android.dx.rop.cst.CstUtf8;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.util.AnnotatedOutput;
 import com.android.dx.util.Hex;
 
@@ -25,9 +26,6 @@ import com.android.dx.util.Hex;
  * Representation of a type reference inside a Dalvik file.
  */
 public final class TypeIdItem extends IdItem {
-    /** size of instances when written out to a file, in bytes */
-    public static final int WRITE_SIZE = 4;
-
     /**
      * Constructs an instance.
      *
@@ -46,7 +44,7 @@ public final class TypeIdItem extends IdItem {
     /** {@inheritDoc} */
     @Override
     public int writeSize() {
-        return WRITE_SIZE;
+        return SizeOf.TYPE_ID_ITEM;
     }
 
     /** {@inheritDoc} */
@@ -59,7 +57,7 @@ public final class TypeIdItem extends IdItem {
     @Override
     public void writeTo(DexFile file, AnnotatedOutput out) {
         CstType type = getDefiningClass();
-        CstUtf8 descriptor = type.getDescriptor();
+        CstString descriptor = type.getDescriptor();
         int idx = file.getStringIds().indexOf(descriptor);
 
         if (out.annotates()) {

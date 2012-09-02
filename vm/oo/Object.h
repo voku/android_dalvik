@@ -18,12 +18,11 @@
  * Declaration of the fundamental Object type and refinements thereof, plus
  * some functions for manipulating them.
  */
-#ifndef _DALVIK_OO_OBJECT
-#define _DALVIK_OO_OBJECT
-
-#include <Atomic.h>
+#ifndef DALVIK_OO_OBJECT_H_
+#define DALVIK_OO_OBJECT_H_
 
 #include <stddef.h>
+#include "Atomic.h"
 
 /* fwd decl */
 struct DataObject;
@@ -38,18 +37,6 @@ struct StaticField;
 struct InstField;
 struct Field;
 struct RegisterMap;
-typedef struct DataObject DataObject;
-typedef struct InitiatingLoaderList InitiatingLoaderList;
-typedef struct ClassObject ClassObject;
-typedef struct StringObject StringObject;
-typedef struct ArrayObject ArrayObject;
-typedef struct Method Method;
-typedef struct ExceptionEntry ExceptionEntry;
-typedef struct LineNumEntry LineNumEntry;
-typedef struct StaticField StaticField;
-typedef struct InstField InstField;
-typedef struct Field Field;
-typedef struct RegisterMap RegisterMap;
 
 /*
  * Native function pointer type.
@@ -67,30 +54,33 @@ typedef void (*DalvikNativeFunc)(const u4* args, JValue* pResult);
 
 
 /* vm-internal access flags and related definitions */
-typedef enum AccessFlags {
+enum AccessFlags {
     ACC_MIRANDA         = 0x8000,       // method (internal to VM)
     JAVA_FLAGS_MASK     = 0xffff,       // bits set from Java sources (low 16)
-} AccessFlags;
+};
 
 /* Use the top 16 bits of the access flags field for
  * other class flags.  Code should use the *CLASS_FLAG*()
  * macros to set/get these flags.
  */
-typedef enum ClassFlags {
-    CLASS_ISFINALIZABLE     = (1<<31),  // class/ancestor overrides finalize()
-    CLASS_ISARRAY           = (1<<30),  // class is a "[*"
-    CLASS_ISOBJECTARRAY     = (1<<29),  // class is a "[L*" or "[[*"
-    CLASS_ISREFERENCE       = (1<<28),  // class is a soft/weak/phantom ref
-                                        // only ISREFERENCE is set --> soft
-    CLASS_ISWEAKREFERENCE   = (1<<27),  // class is a weak reference
-    CLASS_ISPHANTOMREFERENCE = (1<<26), // class is a phantom reference
+enum ClassFlags {
+    CLASS_ISFINALIZABLE        = (1<<31), // class/ancestor overrides finalize()
+    CLASS_ISARRAY              = (1<<30), // class is a "[*"
+    CLASS_ISOBJECTARRAY        = (1<<29), // class is a "[L*" or "[[*"
+    CLASS_ISCLASS              = (1<<28), // class is *the* class Class
 
-    CLASS_MULTIPLE_DEFS     = (1<<25),  // DEX verifier: defs in multiple DEXs
+    CLASS_ISREFERENCE          = (1<<27), // class is a soft/weak/phantom ref
+                                          // only ISREFERENCE is set --> soft
+    CLASS_ISWEAKREFERENCE      = (1<<26), // class is a weak reference
+    CLASS_ISFINALIZERREFERENCE = (1<<25), // class is a finalizer reference
+    CLASS_ISPHANTOMREFERENCE   = (1<<24), // class is a phantom reference
+
+    CLASS_MULTIPLE_DEFS        = (1<<23), // DEX verifier: defs in multiple DEXs
 
     /* unlike the others, these can be present in the optimized DEX file */
-    CLASS_ISOPTIMIZED       = (1<<17),  // class may contain opt instrs
-    CLASS_ISPREVERIFIED     = (1<<16),  // class has been pre-verified
-} ClassFlags;
+    CLASS_ISOPTIMIZED          = (1<<17), // class may contain opt instrs
+    CLASS_ISPREVERIFIED        = (1<<16), // class has been pre-verified
+};
 
 /* bits we can reasonably expect to see set in a DEX access flags field */
 #define EXPECTED_FILE_FLAGS \
@@ -115,9 +105,9 @@ typedef enum ClassFlags {
  * Use the top 16 bits of the access flags field for other method flags.
  * Code should use the *METHOD_FLAG*() macros to set/get these flags.
  */
-typedef enum MethodFlags {
+enum MethodFlags {
     METHOD_ISWRITABLE       = (1<<31),  // the method's code is writable
-} MethodFlags;
+};
 
 /*
  * Get/set method flags.
@@ -135,7 +125,7 @@ typedef enum MethodFlags {
     ((u4)((method)->accessFlags & (flags)))
 
 /* current state of the class, increasing as we progress */
-typedef enum ClassStatus {
+enum ClassStatus {
     CLASS_ERROR         = -1,
 
     CLASS_NOTREADY      = 0,
@@ -146,32 +136,7 @@ typedef enum ClassStatus {
     CLASS_VERIFIED      = 5,    /* logically part of linking; done pre-init */
     CLASS_INITIALIZING  = 6,    /* class init in progress */
     CLASS_INITIALIZED   = 7,    /* ready to go */
-} ClassStatus;
-
-/*
- * Primitive type identifiers.  We use these values as indexes into an
- * array of synthesized classes, so these start at zero and count up.
- * The order is arbitrary (mimics table in doc for newarray opcode),
- * but can't be changed without shuffling some reflection tables.
- *
- * PRIM_VOID can't be used as an array type, but we include it here for
- * other uses (e.g. Void.TYPE).
- */
-typedef enum PrimitiveType {
-    PRIM_NOT        = -1,       /* value is not a primitive type */
-    PRIM_BOOLEAN    = 0,
-    PRIM_CHAR       = 1,
-    PRIM_FLOAT      = 2,
-    PRIM_DOUBLE     = 3,
-    PRIM_BYTE       = 4,
-    PRIM_SHORT      = 5,
-    PRIM_INT        = 6,
-    PRIM_LONG       = 7,
-    PRIM_VOID       = 8,
-
-    PRIM_MAX
-} PrimitiveType;
-#define PRIM_TYPE_TO_LETTER "ZCFDBSIJV"     /* must match order in enum */
+};
 
 /*
  * Definitions for packing refOffsets in ClassObject.
@@ -215,7 +180,7 @@ typedef enum PrimitiveType {
 /*
  * Used for iftable in ClassObject.
  */
-typedef struct InterfaceEntry {
+struct InterfaceEntry {
     /* pointer to interface class */
     ClassObject*    clazz;
 
@@ -224,7 +189,7 @@ typedef struct InterfaceEntry {
      * which holds the vtables for all interfaces declared by this class.
      */
     int*            methodIndexArray;
-} InterfaceEntry;
+};
 
 
 
@@ -240,7 +205,7 @@ typedef struct InterfaceEntry {
  *
  * All objects have an Object header followed by type-specific data.
  */
-typedef struct Object {
+struct Object {
     /* ptr to class object */
     ClassObject*    clazz;
 
@@ -249,25 +214,19 @@ typedef struct Object {
      * the comments in Sync.c for a description of its layout.
      */
     u4              lock;
-} Object;
+};
 
 /*
  * Properly initialize an Object.
  * void DVM_OBJECT_INIT(Object *obj, ClassObject *clazz_)
  */
-#define DVM_OBJECT_INIT(obj, clazz_)                                    \
-    do {                                                                \
-        dvmSetFieldObject((Object *)obj, offsetof(Object, clazz),       \
-                          (Object *)clazz_);                            \
-        DVM_LOCK_INIT(&(obj)->lock);                                    \
-    } while (0)
+#define DVM_OBJECT_INIT(obj, clazz_) \
+    dvmSetFieldObject(obj, OFFSETOF_MEMBER(Object, clazz), clazz_)
 
 /*
  * Data objects have an Object header followed by their instance data.
  */
-struct DataObject {
-    Object          obj;                /* MUST be first item */
-
+struct DataObject : Object {
     /* variable #of u4 slots; u8 uses 2 slots */
     u4              instanceData[1];
 };
@@ -283,11 +242,24 @@ struct DataObject {
  * Currently this is just equal to DataObject, and we pull the fields out
  * like we do for any other object.
  */
-struct StringObject {
-    Object          obj;                /* MUST be first item */
-
+struct StringObject : Object {
     /* variable #of u4 slots; u8 uses 2 slots */
     u4              instanceData[1];
+
+    /** Returns this string's length in characters. */
+    int length() const;
+
+    /**
+     * Returns this string's length in bytes when encoded as modified UTF-8.
+     * Does not include a terminating NUL byte.
+     */
+    int utfLength() const;
+
+    /** Returns this string's char[] as an ArrayObject. */
+    ArrayObject* array() const;
+
+    /** Returns this string's char[] as a u2*. */
+    const u2* chars() const;
 };
 
 
@@ -298,9 +270,7 @@ struct StringObject {
  * by the instruction.  If necessary, the width can be derived from
  * the first char of obj->clazz->descriptor.
  */
-struct ArrayObject {
-    Object          obj;                /* MUST be first item */
-
+struct ArrayObject : Object {
     /* number of elements; immutable after init */
     u4              length;
 
@@ -334,26 +304,19 @@ struct Field {
     const char*     name;
     const char*     signature;      /* e.g. "I", "[C", "Landroid/os/Debug;" */
     u4              accessFlags;
-#ifdef PROFILE_FIELD_ACCESS
-    u4              gets;
-    u4              puts;
-#endif
 };
 
 /*
  * Static field.
  */
-struct StaticField {
-    Field           field;          /* MUST be first item */
+struct StaticField : Field {
     JValue          value;          /* initially set from DEX for primitives */
 };
 
 /*
  * Instance field.
  */
-struct InstField {
-    Field           field;          /* MUST be first item */
-
+struct InstField : Field {
     /*
      * This field indicates the byte offset from the beginning of the
      * (Object *) to the actual instance data; e.g., byteOffset==0 is
@@ -384,9 +347,7 @@ struct InstField {
  * instance) used in Dalvik works out pretty well.  The only time it's
  * annoying is when enumerating or searching for things with reflection.
  */
-struct ClassObject {
-    Object          obj;                /* MUST be first item */
-
+struct ClassObject : Object {
     /* leave space for instance data; we could access fields directly if we
        freeze the definition of java/lang/Class */
     u4              instanceData[CLASS_FIELD_SLOTS];
@@ -510,7 +471,7 @@ struct ClassObject {
 
     /* static fields */
     int             sfieldCount;
-    StaticField     sfields[]; /* MUST be last item */
+    StaticField     sfields[0]; /* MUST be last item */
 };
 
 /*
@@ -575,17 +536,40 @@ struct Method {
     /* the actual code */
     const u2*       insns;          /* instructions, in memory-mapped .dex */
 
-    /* cached JNI argument and return-type hints */
+    /* JNI: cached argument and return-type hints */
     int             jniArgInfo;
 
     /*
-     * Native method ptr; could be actual function or a JNI bridge.  We
+     * JNI: native method ptr; could be actual function or a JNI bridge.  We
      * don't currently discriminate between DalvikBridgeFunc and
      * DalvikNativeFunc; the former takes an argument superset (i.e. two
      * extra args) which will be ignored.  If necessary we can use
      * insns==NULL to detect JNI bridge vs. internal native.
      */
     DalvikBridgeFunc nativeFunc;
+
+    /*
+     * JNI: true if this static non-synchronized native method (that has no
+     * reference arguments) needs a JNIEnv* and jclass/jobject. Libcore
+     * uses this.
+     */
+    bool fastJni;
+
+    /*
+     * JNI: true if this method has no reference arguments. This lets the JNI
+     * bridge avoid scanning the shorty for direct pointers that need to be
+     * converted to local references.
+     *
+     * TODO: replace this with a list of indexes of the reference arguments.
+     */
+    bool noRef;
+
+    /*
+     * JNI: true if we should log entry and exit. This is the only way
+     * developers can log the local references that are passed into their code.
+     * Used for debugging JNI problems in third-party code.
+     */
+    bool shouldTrace;
 
     /*
      * Register map data, if available.  This will point into the DEX file
@@ -629,6 +613,14 @@ Method* dvmFindMethodHier(const ClassObject* clazz, const char* methodName,
     const DexProto* proto);
 
 /*
+ * Find a method in an interface hierarchy.
+ */
+Method* dvmFindInterfaceMethodHierByDescriptor(const ClassObject* iface,
+    const char* methodName, const char* descriptor);
+Method* dvmFindInterfaceMethodHier(const ClassObject* iface,
+    const char* methodName, const DexProto* proto);
+
+/*
  * Find the implementation of "meth" in "clazz".
  *
  * Returns NULL and throws an exception if not found.
@@ -639,7 +631,7 @@ const Method* dvmGetVirtualizedMethod(const ClassObject* clazz,
 /*
  * Get the source file associated with a method.
  */
-const char* dvmGetMethodSourceFile(const Method* meth);
+extern "C" const char* dvmGetMethodSourceFile(const Method* meth);
 
 /*
  * Find a field within a class.  The superclass is not searched.
@@ -702,6 +694,9 @@ INLINE bool dvmIsNativeMethod(const Method* method) {
 INLINE bool dvmIsAbstractMethod(const Method* method) {
     return (method->accessFlags & ACC_ABSTRACT) != 0;
 }
+INLINE bool dvmIsSyntheticMethod(const Method* method) {
+    return (method->accessFlags & ACC_SYNTHETIC) != 0;
+}
 INLINE bool dvmIsMirandaMethod(const Method* method) {
     return (method->accessFlags & ACC_MIRANDA) != 0;
 }
@@ -762,6 +757,24 @@ INLINE bool dvmIsClassVerified(const ClassObject* clazz) {
 }
 
 /*
+ * Return whether the given object is an instance of Class.
+ */
+INLINE bool dvmIsClassObject(const Object* obj) {
+    assert(obj != NULL);
+    assert(obj->clazz != NULL);
+    return IS_CLASS_FLAG_SET(obj->clazz, CLASS_ISCLASS);
+}
+
+/*
+ * Return whether the given object is the class Class (that is, the
+ * unique class which is an instance of itself).
+ */
+INLINE bool dvmIsTheClassClass(const ClassObject* clazz) {
+    assert(clazz != NULL);
+    return IS_CLASS_FLAG_SET(clazz, CLASS_ISCLASS);
+}
+
+/*
  * Get the associated code struct for a method. This returns NULL
  * for non-bytecode methods.
  */
@@ -791,4 +804,4 @@ INLINE u4 dvmGetMethodInsnsSize(const Method* meth) {
 /* debugging */
 void dvmDumpObject(const Object* obj);
 
-#endif /*_DALVIK_OO_OBJECT*/
+#endif  // DALVIK_OO_OBJECT_H_

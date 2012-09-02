@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#if __ARM_ARCH_5TE__
+#if __ARM_ARCH_5TE__ || __ARM_ARCH_6__
 #define JIT_PROF_SIZE_LOG_2     9
 #else
 #define JIT_PROF_SIZE_LOG_2     11

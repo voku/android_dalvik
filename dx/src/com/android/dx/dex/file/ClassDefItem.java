@@ -16,6 +16,7 @@
 
 package com.android.dx.dex.file;
 
+import com.android.dx.dex.SizeOf;
 import com.android.dx.rop.annotation.Annotations;
 import com.android.dx.rop.annotation.AnnotationsList;
 import com.android.dx.rop.code.AccessFlags;
@@ -23,8 +24,8 @@ import com.android.dx.rop.cst.Constant;
 import com.android.dx.rop.cst.CstArray;
 import com.android.dx.rop.cst.CstFieldRef;
 import com.android.dx.rop.cst.CstMethodRef;
+import com.android.dx.rop.cst.CstString;
 import com.android.dx.rop.cst.CstType;
-import com.android.dx.rop.cst.CstUtf8;
 import com.android.dx.rop.type.StdTypeList;
 import com.android.dx.rop.type.TypeList;
 import com.android.dx.util.AnnotatedOutput;
@@ -34,7 +35,6 @@ import com.android.dx.util.Writers;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.ArrayList;
-import java.util.TreeSet;
 
 /**
  * Representation of a Dalvik class, which is basically a set of
@@ -42,8 +42,6 @@ import java.util.TreeSet;
  * information.
  */
 public final class ClassDefItem extends IndexedItem {
-    /** size of instances when written out to a file, in bytes */
-    public static final int WRITE_SIZE = 32;
 
     /** {@code non-null;} type constant for this class */
     private final CstType thisClass;
@@ -61,7 +59,7 @@ public final class ClassDefItem extends IndexedItem {
     private TypeListItem interfaces;
 
     /** {@code null-ok;} source file name or {@code null} if unknown */
-    private final CstUtf8 sourceFile;
+    private final CstString sourceFile;
 
     /** {@code non-null;} associated class data object */
     private final ClassDataItem classData;
@@ -88,7 +86,7 @@ public final class ClassDefItem extends IndexedItem {
      * {@code null} if unknown
      */
     public ClassDefItem(CstType thisClass, int accessFlags,
-            CstType superclass, TypeList interfaces, CstUtf8 sourceFile) {
+            CstType superclass, TypeList interfaces, CstString sourceFile) {
         if (thisClass == null) {
             throw new NullPointerException("thisClass == null");
         }
@@ -122,7 +120,7 @@ public final class ClassDefItem extends IndexedItem {
     /** {@inheritDoc} */
     @Override
     public int writeSize() {
-        return WRITE_SIZE;
+        return SizeOf.CLASS_DEF_ITEM;
     }
 
     /** {@inheritDoc} */
@@ -266,7 +264,7 @@ public final class ClassDefItem extends IndexedItem {
      *
      * @return {@code null-ok;} the source file name or {@code null} if unknown
      */
-    public CstUtf8 getSourceFile() {
+    public CstString getSourceFile() {
         return sourceFile;
     }
 

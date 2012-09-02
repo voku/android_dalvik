@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#ifndef _DALVIK_VM_COMPILER_OPTIMIZATION_H
-#define _DALVIK_VM_COMPILER_OPTIMIZATION_H
+#ifndef DALVIK_VM_COMPILER_OPTIMIZATION_H_
+#define DALVIK_VM_COMPILER_OPTIMIZATION_H_
 
 #include "Dalvik.h"
 
@@ -23,13 +23,14 @@
  * If the corresponding bit is set in gDvmJit.disableOpt, the selected
  * optimization will be suppressed.
  */
-typedef enum optControlVector {
+enum optControlVector {
     kLoadStoreElimination = 0,
     kLoadHoisting,
     kTrackLiveTemps,
     kSuppressLoads,
     kMethodInlining,
-} optControlVector;
+    kMethodJit,
+};
 
 /* Forward declarations */
 struct CompilationUnit;
@@ -41,4 +42,4 @@ void dvmCompilerApplyLocalOptimizations(struct CompilationUnit *cUnit,
 
 void dvmCompilerApplyGlobalOptimizations(struct CompilationUnit *cUnit);
 
-#endif /* _DALVIK_VM_COMPILER_OPTIMIZATION_H */
+#endif  // DALVIK_VM_COMPILER_OPTIMIZATION_H_

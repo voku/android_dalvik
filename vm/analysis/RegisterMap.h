@@ -19,8 +19,8 @@
  *
  * These structures should be treated as opaque through most of the VM.
  */
-#ifndef _DALVIK_REGISTERMAP
-#define _DALVIK_REGISTERMAP
+#ifndef DALVIK_REGISTERMAP_H_
+#define DALVIK_REGISTERMAP_H_
 
 #include "analysis/VerifySubs.h"
 #include "analysis/CodeVerify.h"
@@ -28,7 +28,7 @@
 /*
  * Format enumeration for RegisterMap data area.
  */
-typedef enum RegisterMapFormat {
+enum RegisterMapFormat {
     kRegMapFormatUnknown = 0,
     kRegMapFormatNone,          /* indicates no map data follows */
     kRegMapFormatCompact8,      /* compact layout, 8-bit addresses */
@@ -36,7 +36,7 @@ typedef enum RegisterMapFormat {
     kRegMapFormatDifferential,  /* compressed, differential encoding */
 
     kRegMapFormatOnHeap = 0x80, /* bit flag, indicates allocation on heap */
-} RegisterMapFormat;
+};
 
 /*
  * This is a single variable-size structure.  It may be allocated on the
@@ -67,7 +67,7 @@ void dvmRegisterMapShutdown(void);
  * Get the format.
  */
 INLINE RegisterMapFormat dvmRegisterMapGetFormat(const RegisterMap* pMap) {
-    return pMap->format & ~(kRegMapFormatOnHeap);
+    return (RegisterMapFormat)(pMap->format & ~(kRegMapFormatOnHeap));
 }
 
 /*
@@ -159,12 +159,12 @@ INLINE void dvmReleaseRegisterMapLine(const RegisterMap* pMap, const u1* data)
  *
  * These structures are 32-bit aligned.
  */
-typedef struct RegisterMapMethodPool {
+struct RegisterMapMethodPool {
     u2      methodCount;            /* chiefly used as a sanity check */
 
     /* stream of per-method data starts here */
     u4      methodData[1];
-} RegisterMapMethodPool;
+};
 
 /*
  * Header for the memory-mapped RegisterMap pool in the DEX file.
@@ -177,12 +177,12 @@ typedef struct RegisterMapMethodPool {
  *
  * These structures are 32-bit aligned.
  */
-typedef struct RegisterMapClassPool {
+struct RegisterMapClassPool {
     u4      numClasses;
 
     /* offset table starts here, 32-bit aligned; offset==0 means no data */
     u4      classDataOffset[1];
-} RegisterMapClassPool;
+};
 
 /*
  * Find the register maps for this class.  (Used during class loading.)
@@ -209,14 +209,14 @@ const RegisterMap* dvmRegisterMapGetNext(const void** pPtr);
  * In particular, it keeps track of our temporary mmap region so we can
  * free it later.
  */
-typedef struct RegisterMapBuilder {
+struct RegisterMapBuilder {
     /* public */
     void*       data;
     size_t      size;
 
     /* private */
     MemMapping  memMap;
-} RegisterMapBuilder;
+};
 
 /*
  * Generate a register map set for all verified classes in "pDvmDex".
@@ -263,4 +263,4 @@ INLINE const RegisterMap* dvmGetExpandedRegisterMap(Method* method)
 /* dump stats gathered during register map creation process */
 void dvmRegisterMapDumpStats(void);
 
-#endif /*_DALVIK_REGISTERMAP*/
+#endif  // DALVIK_REGISTERMAP_H_

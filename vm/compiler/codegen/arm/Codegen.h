@@ -45,8 +45,7 @@ static bool genArithOpDoublePortable(CompilationUnit *cUnit, MIR *mir,
 
 static bool genConversionPortable(CompilationUnit *cUnit, MIR *mir);
 
-#if defined(WITH_DEADLOCK_PREDICTION) || defined(WITH_MONITOR_TRACKING) || \
-    defined(__ARM_ARCH_5__)
+#if defined(__ARM_ARCH_5__) || defined(__ARM_ARCH_6__)
 static void genMonitorPortable(CompilationUnit *cUnit, MIR *mir);
 #endif
 
@@ -57,32 +56,10 @@ static void genInterpSingleStep(CompilationUnit *cUnit, MIR *mir);
 
 #if defined(WITH_SELF_VERIFICATION)
 /* Self Verification memory instruction decoder */
-void dvmSelfVerificationMemOpDecode(int lr, int* sp);
+extern "C" void dvmSelfVerificationMemOpDecode(int lr, int* sp);
 #endif
-
-/*
- * Architecture-dependent register allocation routines implemented in
- * Thumb[2]/Ralloc.c
- */
-extern int dvmCompilerAllocTypedTempPair(CompilationUnit *cUnit,
-                                         bool fpHint, int regClass);
-
-extern int dvmCompilerAllocTypedTemp(CompilationUnit *cUnit, bool fpHint,
-                                     int regClass);
-
-extern ArmLIR* dvmCompilerRegCopyNoInsert(CompilationUnit *cUnit, int rDest,
-                                          int rSrc);
-
-extern ArmLIR* dvmCompilerRegCopy(CompilationUnit *cUnit, int rDest, int rSrc);
-
-extern void dvmCompilerRegCopyWide(CompilationUnit *cUnit, int destLo,
-                                   int destHi, int srcLo, int srcHi);
 
 extern void dvmCompilerSetupResourceMasks(ArmLIR *lir);
 
-extern void dvmCompilerFlushRegImpl(CompilationUnit *cUnit, int rBase,
-                                    int displacement, int rSrc, OpSize size);
-
-extern void dvmCompilerFlushRegWideImpl(CompilationUnit *cUnit, int rBase,
-                                        int displacement, int rSrcLo,
-                                        int rSrcHi);
+extern ArmLIR* dvmCompilerRegCopyNoInsert(CompilationUnit *cUnit, int rDest,
+                                          int rSrc);

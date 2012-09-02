@@ -16,11 +16,8 @@
 /*
  * Array handling.
  */
-#ifndef _DALVIK_OO_ARRAY
-#define _DALVIK_OO_ARRAY
-
-/* width of an object reference, for arrays of objects */
-#define kObjectArrayRefWidth    sizeof(Object*)
+#ifndef DALVIK_OO_ARRAY_H_
+#define DALVIK_OO_ARRAY_H_
 
 /*
  * Find a matching array class.  If it doesn't exist, create it.
@@ -39,40 +36,13 @@ ClassObject* dvmFindArrayClass(const char* descriptor, Object* loader);
 ClassObject* dvmFindArrayClassForElement(ClassObject* elemClassObj);
 
 /*
- * Allocate space for a new array object.
- *
- * "allocFlags" determines whether the new object will be added to the
- * "tracked alloc" table.
- *
- * Returns NULL with an exception raised if allocation fails.
- */
-ArrayObject* dvmAllocArray(ClassObject* arrayClass, size_t length,
-    size_t elemWidth, int allocFlags);
-
-/*
  * Create a new array, given an array class.  The class may represent an
  * array of references or primitives.
  *
  * Returns NULL with an exception raised if allocation fails.
  */
-ArrayObject* dvmAllocArrayByClass(ClassObject* arrayClass,
+extern "C" ArrayObject* dvmAllocArrayByClass(ClassObject* arrayClass,
     size_t length, int allocFlags);
-
-/*
- * Create a new array that holds references to members of the specified class.
- *
- * "elemClassObj" is the element type, and may itself be an array class.  It
- * may not be a primitive class.
- *
- * "allocFlags" determines whether the new object will be added to the
- * "tracked alloc" table.
- *
- * This is less efficient than dvmAllocArray(), but occasionally convenient.
- *
- * Returns NULL with an exception raised if allocation fails.
- */
-ArrayObject* dvmAllocObjectArray(ClassObject* elemClassObj, size_t length,
-    int allocFlags);
 
 /*
  * Allocate an array whose members are primitives (bools, ints, etc.).
@@ -95,12 +65,6 @@ ArrayObject* dvmAllocPrimitiveArray(char type, size_t length, int allocFlags);
  */
 ArrayObject* dvmAllocMultiArray(ClassObject* arrayClass, int curDim,
     const int* dimensions);
-
-/*
- * Find the synthesized object for the primitive class, generating it
- * if this is the first reference.
- */
-ClassObject* dvmFindPrimitiveClass(char type);
 
 /*
  * Verify that the object is actually an array.
@@ -131,7 +95,7 @@ INLINE bool dvmIsObjectArrayClass(const ClassObject* clazz)
  */
 INLINE bool dvmIsObjectArray(const ArrayObject* arrayObj)
 {
-    return dvmIsObjectArrayClass(arrayObj->obj.clazz);
+    return dvmIsObjectArrayClass(arrayObj->clazz);
 }
 
 /*
@@ -173,4 +137,4 @@ size_t dvmArrayObjectSize(const ArrayObject *array);
  */
 size_t dvmArrayClassElementWidth(const ClassObject* clazz);
 
-#endif /*_DALVIK_OO_ARRAY*/
+#endif  // DALVIK_OO_ARRAY_H_

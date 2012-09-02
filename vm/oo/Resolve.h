@@ -16,8 +16,8 @@
 /*
  * Resolve "constant pool" references into pointers to VM structs.
  */
-#ifndef _DALVIK_OO_RESOLVE
-#define _DALVIK_OO_RESOLVE
+#ifndef DALVIK_OO_RESOLVE_H_
+#define DALVIK_OO_RESOLVE_H_
 
 /*
  * "Direct" and "virtual" methods are stored independently.  The type of call
@@ -27,13 +27,13 @@
  * (<clinit>, <init>, and methods declared "private" or "static" are stored
  * in the "direct" list.  All others are stored in the "virtual" list.)
  */
-typedef enum MethodType {
+enum MethodType {
     METHOD_UNKNOWN  = 0,
     METHOD_DIRECT,      // <init>, private
     METHOD_STATIC,      // static
     METHOD_VIRTUAL,     // virtual, super
     METHOD_INTERFACE    // interface
-} MethodType;
+};
 
 /*
  * Resolve a class, given the referring class and a constant pool index
@@ -43,8 +43,9 @@ typedef enum MethodType {
  *
  * Throws an exception and returns NULL on failure.
  */
-ClassObject* dvmResolveClass(const ClassObject* referrer, u4 classIdx,
-    bool fromUnverifiedConstant);
+extern "C" ClassObject* dvmResolveClass(const ClassObject* referrer,
+                                        u4 classIdx,
+                                        bool fromUnverifiedConstant);
 
 /*
  * Resolve a direct, static, or virtual method.
@@ -54,8 +55,8 @@ ClassObject* dvmResolveClass(const ClassObject* referrer, u4 classIdx,
  *
  * Throws an exception and returns NULL on failure.
  */
-Method* dvmResolveMethod(const ClassObject* referrer, u4 methodIdx,
-    MethodType methodType);
+extern "C" Method* dvmResolveMethod(const ClassObject* referrer, u4 methodIdx,
+                                    MethodType methodType);
 
 /*
  * Resolve an interface method.
@@ -69,7 +70,8 @@ Method* dvmResolveInterfaceMethod(const ClassObject* referrer, u4 methodIdx);
  *
  * Throws an exception and returns NULL on failure.
  */
-InstField* dvmResolveInstField(const ClassObject* referrer, u4 ifieldIdx);
+extern "C" InstField* dvmResolveInstField(const ClassObject* referrer,
+                                          u4 ifieldIdx);
 
 /*
  * Resolve a static field.
@@ -78,18 +80,19 @@ InstField* dvmResolveInstField(const ClassObject* referrer, u4 ifieldIdx);
  *
  * Throws an exception and returns NULL on failure.
  */
-StaticField* dvmResolveStaticField(const ClassObject* referrer, u4 sfieldIdx);
+extern "C" StaticField* dvmResolveStaticField(const ClassObject* referrer,
+                                              u4 sfieldIdx);
 
 /*
  * Resolve a "const-string" reference.
  *
  * Throws an exception and returns NULL on failure.
  */
-StringObject* dvmResolveString(const ClassObject* referrer, u4 stringIdx);
+extern "C" StringObject* dvmResolveString(const ClassObject* referrer, u4 stringIdx);
 
 /*
  * Return debug string constant for enum.
  */
 const char* dvmMethodTypeStr(MethodType methodType);
 
-#endif /*_DALVIK_OO_RESOLVE*/
+#endif  // DALVIK_OO_RESOLVE_H_

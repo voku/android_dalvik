@@ -17,23 +17,19 @@
 /*
  * VM thread support.
  */
-#ifndef _DALVIK_THREAD
-#define _DALVIK_THREAD
+#ifndef DALVIK_THREAD_H_
+#define DALVIK_THREAD_H_
 
 #include "jni.h"
+#include "interp/InterpState.h"
 
 #include <errno.h>
 #include <cutils/sched_policy.h>
-
 
 #if defined(CHECK_MUTEX) && !defined(__USE_UNIX98)
 /* glibc lacks this unless you #define __USE_UNIX98 */
 int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type);
 enum { PTHREAD_MUTEX_ERRORCHECK = PTHREAD_MUTEX_ERRORCHECK_NP };
-#endif
-
-#ifdef WITH_MONITOR_TRACKING
-struct LockedObjectData;
 #endif
 
 /*
@@ -43,7 +39,7 @@ struct LockedObjectData;
  *
  * Note that "suspended" is orthogonal to these values (so says JDWP).
  */
-typedef enum ThreadStatus {
+enum ThreadStatus {
     THREAD_UNDEFINED    = -1,       /* makes enum compatible with int32_t */
 
     /* these match up with JDWP values */
@@ -58,7 +54,7 @@ typedef enum ThreadStatus {
     THREAD_NATIVE       = 7,        /* off in a JNI native method */
     THREAD_VMWAIT       = 8,        /* waiting on a VM resource */
     THREAD_SUSPENDED    = 9,        /* suspended, usually by GC or debugger */
-} ThreadStatus;
+};
 
 /* thread priorities, from java.lang.Thread */
 enum {
@@ -70,7 +66,6 @@ enum {
 
 /* initialization */
 bool dvmThreadStartup(void);
-bool dvmThreadObjStartup(void);
 void dvmThreadShutdown(void);
 void dvmSlayDaemons(void);
 
@@ -81,28 +76,57 @@ void dvmSlayDaemons(void);
 #define kInternalRefMax         4096    /* mainly a sanity check */
 
 #define kMinStackSize       (512 + STACK_OVERFLOW_RESERVE)
-#define kDefaultStackSize   (12*1024)   /* three 4K pages */
+#define kDefaultStackSize   (16*1024)   /* four 4K pages */
 #define kMaxStackSize       (256*1024 + STACK_OVERFLOW_RESERVE)
+
+/*
+ * Interpreter control struction.  Packed into a long long to enable
+ * atomic updates.
+ */
+union InterpBreak {
+    volatile int64_t   all;
+    struct {
+        uint16_t   subMode;
+        uint8_t    breakFlags;
+        int8_t     unused;   /* for future expansion */
+#ifndef DVM_NO_ASM_INTERP
+        void* curHandlerTable;
+#else
+        void* unused;
+#endif
+    } ctl;
+};
 
 /*
  * Our per-thread data.
  *
  * These are allocated on the system heap.
  */
-typedef struct Thread {
+struct Thread {
+    /*
+     * Interpreter state which must be preserved across nested
+     * interpreter invocations (via JNI callbacks).  Must be the first
+     * element in Thread.
+     */
+    InterpSaveState interpSave;
+
     /* small unique integer; useful for "thin" locks and debug messages */
     u4          threadId;
 
     /*
-     * Thread's current status.  Can only be changed by the thread itself
-     * (i.e. don't mess with this from other threads).
+     * Begin interpreter state which does not need to be preserved, but should
+     * be located towards the beginning of the Thread structure for
+     * efficiency.
      */
-    volatile ThreadStatus status;
 
     /*
-     * This is the number of times the thread has been suspended.  When the
-     * count drops to zero, the thread resumes.
-     *
+     * interpBreak contains info about the interpreter mode, as well as
+     * a count of the number of times the thread has been suspended.  When
+     * the count drops to zero, the thread resumes.
+     */
+    InterpBreak interpBreak;
+
+    /*
      * "dbgSuspendCount" is the portion of the suspend count that the
      * debugger is responsible for.  This has to be tracked separately so
      * that we can recover correctly if the debugger abruptly disconnects
@@ -112,37 +136,102 @@ typedef struct Thread {
      *
      * Both of these are guarded by gDvm.threadSuspendCountLock.
      *
-     * (We could store both of these in the same 32-bit, using 16-bit
-     * halves, to make atomic ops possible.  In practice, you only need
-     * to read suspendCount, and we need to hold a mutex when making
-     * changes, so there's no need to merge them.  Note the non-debug
-     * component will rarely be other than 1 or 0 -- not sure it's even
-     * possible with the way mutexes are currently used.)
+     * Note the non-debug component will rarely be other than 1 or 0 -- (not
+     * sure it's even possible with the way mutexes are currently used.)
      */
-    int         suspendCount;
-    int         dbgSuspendCount;
+
+    int suspendCount;
+    int dbgSuspendCount;
+
+    u1*         cardTable;
+
+    /* current limit of stack; flexes for StackOverflowError */
+    const u1*   interpStackEnd;
+
+    /* FP of bottom-most (currently executing) stack frame on interp stack */
+    void*       XcurFrame;
+    /* current exception, or NULL if nothing pending */
+    Object*     exception;
+
+    bool        debugIsMethodEntry;
+    /* interpreter stack size; our stacks are fixed-length */
+    int         interpStackSize;
+    bool        stackOverflowed;
 
     /* thread handle, as reported by pthread_self() */
     pthread_t   handle;
+
+    /* Assembly interpreter handler tables */
+#ifndef DVM_NO_ASM_INTERP
+    void*       mainHandlerTable;   // Table of actual instruction handler
+    void*       altHandlerTable;    // Table of breakout handlers
+#else
+    void*       unused0;            // Consume space to keep offsets
+    void*       unused1;            //   the same between builds with
+#endif
+
+    /*
+     * singleStepCount is a countdown timer used with the breakFlag
+     * kInterpSingleStep.  If kInterpSingleStep is set in breakFlags,
+     * singleStepCount will decremented each instruction execution.
+     * Once it reaches zero, the kInterpSingleStep flag in breakFlags
+     * will be cleared.  This can be used to temporarily prevent
+     * execution from re-entering JIT'd code or force inter-instruction
+     * checks by delaying the reset of curHandlerTable to mainHandlerTable.
+     */
+    int         singleStepCount;
+
+#ifdef WITH_JIT
+    struct JitToInterpEntries jitToInterpEntries;
+    /*
+     * Whether the current top VM frame is in the interpreter or JIT cache:
+     *   NULL    : in the interpreter
+     *   non-NULL: entry address of the JIT'ed code (the actual value doesn't
+     *             matter)
+     */
+    void*             inJitCodeCache;
+    unsigned char*    pJitProfTable;
+    int               jitThreshold;
+    const void*       jitResumeNPC;     // Translation return point
+    const u4*         jitResumeNSP;     // Native SP at return point
+    const u2*         jitResumeDPC;     // Dalvik inst following single-step
+    JitState    jitState;
+    int         icRechainCount;
+    const void* pProfileCountdown;
+    const ClassObject* callsiteClass;
+    const Method*     methodToCall;
+#endif
+
+    /* JNI local reference tracking */
+    IndirectRefTable jniLocalRefTable;
+
+#if defined(WITH_JIT)
+#if defined(WITH_SELF_VERIFICATION)
+    /* Buffer for register state during self verification */
+    struct ShadowSpace* shadowSpace;
+#endif
+    int         currTraceRun;
+    int         totalTraceLen;  // Number of Dalvik insts in trace
+    const u2*   currTraceHead;  // Start of the trace we're building
+    const u2*   currRunHead;    // Start of run we're building
+    int         currRunLen;     // Length of run in 16-bit words
+    const u2*   lastPC;         // Stage the PC for the threaded interpreter
+    const Method*  traceMethod; // Starting method of current trace
+    intptr_t    threshFilter[JIT_TRACE_THRESH_FILTER_SIZE];
+    JitTraceRun trace[MAX_JIT_RUN_LEN];
+#endif
+
+    /*
+     * Thread's current status.  Can only be changed by the thread itself
+     * (i.e. don't mess with this from other threads).
+     */
+    volatile ThreadStatus status;
 
     /* thread ID, only useful under Linux */
     pid_t       systemTid;
 
     /* start (high addr) of interp stack (subtract size to get malloc addr) */
     u1*         interpStackStart;
-
-    /* current limit of stack; flexes for StackOverflowError */
-    const u1*   interpStackEnd;
-
-    /* interpreter stack size; our stacks are fixed-length */
-    int         interpStackSize;
-    bool        stackOverflowed;
-
-    /* FP of bottom-most (currently executing) stack frame on interp stack */
-    void*       curFrame;
-
-    /* current exception, or NULL if nothing pending */
-    Object*     exception;
 
     /* the java/lang/Thread that we are associated with */
     Object*     threadObj;
@@ -153,26 +242,6 @@ typedef struct Thread {
     /* internal reference tracking */
     ReferenceTable  internalLocalRefTable;
 
-#if defined(WITH_JIT)
-    /*
-     * Whether the current top VM frame is in the interpreter or JIT cache:
-     *   NULL    : in the interpreter
-     *   non-NULL: entry address of the JIT'ed code (the actual value doesn't
-     *             matter)
-     */
-    void*       inJitCodeCache;
-#if defined(WITH_SELF_VERIFICATION)
-    /* Buffer for register state during self verification */
-    struct ShadowSpace* shadowSpace;
-#endif
-#endif
-
-    /* JNI local reference tracking */
-#ifdef USE_INDIRECT_REF
-    IndirectRefTable jniLocalRefTable;
-#else
-    ReferenceTable  jniLocalRefTable;
-#endif
 
     /* JNI native monitor reference tracking (initialized on first use) */
     ReferenceTable  jniMonitorRefTable;
@@ -214,16 +283,6 @@ typedef struct Thread {
     /* JDWP invoke-during-breakpoint support */
     DebugInvokeReq  invokeReq;
 
-#ifdef WITH_MONITOR_TRACKING
-    /* objects locked by this thread; most recent is at head of list */
-    struct LockedObjectData* pLockedObjects;
-#endif
-
-#ifdef WITH_ALLOC_LIMITS
-    /* allocation limit, for Debug.setAllocationLimit() regression testing */
-    int         allocLimit;
-#endif
-
     /* base time for per-thread CPU timing (used by method profiling) */
     bool        cpuClockBaseSet;
     u8          cpuClockBase;
@@ -239,13 +298,18 @@ typedef struct Thread {
     /* PC, saved on every instruction; redundant with StackSaveArea */
     const u2*   currentPc2;
 #endif
-} Thread;
+
+    /* Safepoint callback state */
+    pthread_mutex_t   callbackMutex;
+    SafePointCallback callback;
+    void*             callbackArg;
+};
 
 /* start point for an internal thread; mimics pthread args */
 typedef void* (*InternalThreadStart)(void* arg);
 
 /* args for internal thread creation */
-typedef struct InternalStartArgs {
+struct InternalStartArgs {
     /* inputs */
     InternalThreadStart func;
     void*       funcArg;
@@ -255,7 +319,7 @@ typedef struct InternalStartArgs {
     /* result */
     volatile Thread** pThread;
     volatile int*     pCreateStatus;
-} InternalStartArgs;
+};
 
 /* finish init */
 bool dvmPrepMainForJni(JNIEnv* pEnv);
@@ -273,13 +337,15 @@ Thread* dvmThreadSelf(void);
 
 /* grab the thread list global lock */
 void dvmLockThreadList(Thread* self);
+/* try to grab the thread list global lock */
+bool dvmTryLockThreadList(void);
 /* release the thread list global lock */
 void dvmUnlockThreadList(void);
 
 /*
  * Thread suspend/resume, used by the GC and debugger.
  */
-typedef enum SuspendCause {
+enum SuspendCause {
     SUSPEND_NOT = 0,
     SUSPEND_FOR_GC,
     SUSPEND_FOR_DEBUG,
@@ -287,13 +353,14 @@ typedef enum SuspendCause {
     SUSPEND_FOR_STACK_DUMP,
     SUSPEND_FOR_DEX_OPT,
     SUSPEND_FOR_VERIFY,
+    SUSPEND_FOR_HPROF,
 #if defined(WITH_JIT)
     SUSPEND_FOR_TBL_RESIZE,  // jit-table resize
     SUSPEND_FOR_IC_PATCH,    // polymorphic callsite inline-cache patch
     SUSPEND_FOR_CC_RESET,    // code-cache reset
     SUSPEND_FOR_REFRESH,     // Reload data cached in interpState
 #endif
-} SuspendCause;
+};
 void dvmSuspendThread(Thread* thread);
 void dvmSuspendSelf(bool jdwpActivity);
 void dvmResumeThread(Thread* thread);
@@ -315,14 +382,14 @@ void dvmWaitForSuspend(Thread* thread);
  * Check to see if we should be suspended now.  If so, suspend ourselves
  * by sleeping on a condition variable.
  */
-bool dvmCheckSuspendPending(Thread* self);
+extern "C" bool dvmCheckSuspendPending(Thread* self);
 
 /*
  * Fast test for use in the interpreter.  Returns "true" if our suspend
  * count is nonzero.
  */
 INLINE bool dvmCheckSuspendQuick(Thread* self) {
-    return (self->suspendCount != 0);
+    return (self->interpBreak.ctl.subMode & kSubModeSuspendPending);
 }
 
 /*
@@ -465,9 +532,12 @@ Thread* dvmGetThreadByThreadId(u4 threadId);
 void dvmThreadSleep(u8 msec, u4 nsec);
 
 /*
- * Get the name of a thread.  (For safety, hold the thread list lock.)
+ * Get the name of a thread.
+ *
+ * For correctness, the caller should hold the thread list lock to ensure
+ * that the thread doesn't go away mid-call.
  */
-char* dvmGetThreadName(Thread* thread);
+std::string dvmGetThreadName(Thread* thread);
 
 /*
  * Convert ThreadStatus to a string.
@@ -529,35 +599,4 @@ void dvmDumpAllThreadsEx(const DebugOutputTarget* target, bool grabLock);
  */
 void dvmNukeThread(Thread* thread);
 
-#ifdef WITH_MONITOR_TRACKING
-/*
- * Track locks held by the current thread, along with the stack trace at
- * the point the lock was acquired.
- *
- * At any given time the number of locks held across the VM should be
- * fairly small, so there's no reason not to generate and store the entire
- * stack trace.
- */
-typedef struct LockedObjectData {
-    /* the locked object */
-    struct Object*  obj;
-
-    /* number of times it has been locked recursively (zero-based ref count) */
-    int             recursionCount;
-
-    /* stack trace at point of initial acquire */
-    u4              stackDepth;
-    int*            rawStackTrace;
-
-    struct LockedObjectData* next;
-} LockedObjectData;
-
-/*
- * Add/remove/find objects from the thread's monitor list.
- */
-void dvmAddToMonitorList(Thread* self, Object* obj, bool withTrace);
-void dvmRemoveFromMonitorList(Thread* self, Object* obj);
-LockedObjectData* dvmFindInMonitorList(const Thread* self, const Object* obj);
-#endif
-
-#endif /*_DALVIK_THREAD*/
+#endif  // DALVIK_THREAD_H_

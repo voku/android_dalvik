@@ -17,7 +17,6 @@
 package com.android.dx.rop.cst;
 
 import com.android.dx.rop.type.Type;
-
 import java.util.HashMap;
 
 /**
@@ -89,7 +88,7 @@ public final class CstType extends TypedConstant {
      * {@code null-ok;} the type descriptor corresponding to this instance, if
      * calculated
      */
-    private CstUtf8 descriptor;
+    private CstString descriptor;
 
     /**
      * Returns an instance of this class that represents the wrapper
@@ -123,14 +122,16 @@ public final class CstType extends TypedConstant {
      * @return {@code non-null;} an appropriately-constructed instance
      */
     public static CstType intern(Type type) {
-        CstType cst = interns.get(type);
+        synchronized (interns) {
+            CstType cst = interns.get(type);
 
-        if (cst == null) {
-            cst = new CstType(type);
-            interns.put(type, cst);
+            if (cst == null) {
+                cst = new CstType(type);
+                interns.put(type, cst);
+            }
+
+            return cst;
         }
-
-        return cst;
     }
 
     /**
@@ -220,11 +221,29 @@ public final class CstType extends TypedConstant {
      *
      * @return {@code non-null;} the descriptor
      */
-    public CstUtf8 getDescriptor() {
+    public CstString getDescriptor() {
         if (descriptor == null) {
-            descriptor = new CstUtf8(type.getDescriptor());
+            descriptor = new CstString(type.getDescriptor());
         }
 
         return descriptor;
+    }
+
+    /**
+     * Returns a human readable package name for this type, like "java.util".
+     * If this is an array type, this returns the package name of the array's
+     * component type. If this is a primitive type, this returns "default".
+     */
+    public String getPackageName() {
+        // descriptor is a string like "[[Ljava/util/String;"
+        String descriptor = getDescriptor().getString();
+        int lastSlash = descriptor.lastIndexOf('/');
+        int lastLeftSquare = descriptor.lastIndexOf('['); // -1 unless this is an array
+        if (lastSlash == -1) {
+            return "default";
+        } else {
+            // +2 to skip the '[' and the 'L' prefix
+            return descriptor.substring(lastLeftSquare + 2, lastSlash).replace('/', '.');
+        }
     }
 }

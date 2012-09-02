@@ -19,26 +19,26 @@
  * You should follow the JNI function naming conventions, but prefix with
  * "Dalvik_" instead of "Java_".
  */
-#ifndef _DALVIK_NATIVE
-#define _DALVIK_NATIVE
+#ifndef DALVIK_NATIVE_H_
+#define DALVIK_NATIVE_H_
 
 /*
  * Method description; equivalent to a JNI struct.
  */
-typedef struct DalvikNativeMethod {
+struct DalvikNativeMethod {
     const char* name;
     const char* signature;
     DalvikNativeFunc  fnPtr;
-} DalvikNativeMethod;
+};
 
 /*
  * All methods for one class.  The last "methodInfo" has a NULL "name".
  */
-typedef struct DalvikNativeClass {
+struct DalvikNativeClass {
     const char* classDescriptor;
     const DalvikNativeMethod* methodInfo;
     u4          classDescriptorHash;          /* initialized at runtime */
-} DalvikNativeClass;
+};
 
 
 /* init/shutdown */
@@ -49,8 +49,8 @@ void dvmNativeShutdown(void);
 /*
  * Convert argc/argv into a function call.  This is platform-specific.
  */
-void dvmPlatformInvoke(void* pEnv, ClassObject* clazz, int argInfo, int argc,
-    const u4* argv, const char* signature, void* func, JValue* pResult);
+extern "C" void dvmPlatformInvoke(void* pEnv, ClassObject* clazz, int argInfo,
+    int argc, const u4* argv, const char* signature, void* func, JValue* pResult);
 
 /*
  * Generate hints to speed native calls.  This is platform specific.
@@ -62,7 +62,6 @@ u4 dvmPlatformInvokeHints(const DexProto* proto);
  * ("libjpeg.so").  Returns a newly-allocated string.
  */
 char* dvmCreateSystemLibraryName(char* libName);
-//void dvmLoadNativeLibrary(StringObject* libNameObj, Object* classLoader);
 bool dvmLoadNativeCode(const char* fileName, Object* classLoader,
         char** detail);
 
@@ -84,7 +83,6 @@ void dvmResolveNativeMethod(const u4* args, JValue* pResult,
  */
 void dvmUnregisterJNINativeMethods(ClassObject* clazz);
 
-//#define GET_ARG_LONG(_args, _elem)          (*(s8*)(&(_args)[_elem]))
 #define GET_ARG_LONG(_args, _elem)          dvmGetArgLong(_args, _elem)
 
 /*
@@ -98,25 +96,9 @@ void dvmUnregisterJNINativeMethods(ClassObject* clazz);
  */
 INLINE s8 dvmGetArgLong(const u4* args, int elem)
 {
-#if 0
-    union { u4 parts[2]; s8 whole; } conv;
-    conv.parts[0] = args[elem];
-    conv.parts[1] = args[elem+1];
-    return conv.whole;
-#else
-    /* with gcc's optimizer, memcpy() turns into simpler assignments */
     s8 val;
-    memcpy(&val, &args[elem], 8);
+    memcpy(&val, &args[elem], sizeof(val));
     return val;
-#endif
 }
 
-/*
- * Used to implement -Xjnitrace.
- */
-struct Thread;
-void dvmLogNativeMethodEntry(const Method* method, const u4* newFp);
-void dvmLogNativeMethodExit(const Method* method, struct Thread* self,
-        const JValue retval);
-
-#endif /*_DALVIK_NATIVE*/
+#endif  // DALVIK_NATIVE_H_

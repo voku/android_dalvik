@@ -63,7 +63,7 @@ The following registers have fixed assignments:
   reg nick      purpose
   r4  rPC       interpreted program counter, used for fetching instructions
   r5  rFP       interpreted frame pointer, used for accessing locals and args
-  r6  rGLUE     MterpGlue pointer
+  r6  rSELF     self (Thread) pointer
   r7  rINST     first 16-bit code unit of current instruction
   r8  rIBASE    interpreted instruction base pointer, used for computed goto
 
@@ -75,21 +75,21 @@ unspecified registers or condition codes.
 /* single-purpose registers, given names for clarity */
 #define rPC     r4
 #define rFP     r5
-#define rGLUE   r6
+#define rSELF   r6
 #define rINST   r7
 #define rIBASE  r8
 
-/* save/restore the PC and/or FP from the glue struct */
-#define LOAD_PC_FROM_GLUE()     ldr     rPC, [rGLUE, #offGlue_pc]
-#define SAVE_PC_TO_GLUE()       str     rPC, [rGLUE, #offGlue_pc]
-#define LOAD_FP_FROM_GLUE()     ldr     rFP, [rGLUE, #offGlue_fp]
-#define SAVE_FP_TO_GLUE()       str     rFP, [rGLUE, #offGlue_fp]
-#define LOAD_PC_FP_FROM_GLUE()  ldmia   rGLUE, {rPC, rFP}
-#define SAVE_PC_FP_TO_GLUE()    stmia   rGLUE, {rPC, rFP}
+/* save/restore the PC and/or FP from the thread struct */
+#define LOAD_PC_FROM_SELF()     ldr     rPC, [rSELF, #offThread_pc]
+#define SAVE_PC_TO_SELF()       str     rPC, [rSELF, #offThread_pc]
+#define LOAD_FP_FROM_SELF()     ldr     rFP, [rSELF, #offThread_curFrame]
+#define SAVE_FP_TO_SELF()       str     rFP, [rSELF, #offThread_curFrame]
+#define LOAD_PC_FP_FROM_SELF()  ldmia   rSELF, {rPC, rFP}
+#define SAVE_PC_FP_TO_SELF()    stmia   rSELF, {rPC, rFP}
 
 /*
  * "export" the PC to the stack frame, f/b/o future exception objects.  Must
- * be done *before* something calls dvmThrowException.
+ * be done *before* something throws.
  *
  * In C this is "SAVEAREA_FROM_FP(fp)->xtra.currentPc = pc", i.e.
  * fp - sizeof(StackSaveArea) + offsetof(SaveArea, xtra.currentPc)
@@ -124,21 +124,21 @@ unspecified registers or condition codes.
  * exception catch may miss.  (This also implies that it must come after
  * EXPORT_PC().)
  */
-#define FETCH_ADVANCE_INST(_count) ldrh    rINST, [rPC, #(_count*2)]!
+#define FETCH_ADVANCE_INST(_count) ldrh    rINST, [rPC, #((_count)*2)]!
 
 /*
  * The operation performed here is similar to FETCH_ADVANCE_INST, except the
  * src and dest registers are parameterized (not hard-wired to rPC and rINST).
  */
 #define PREFETCH_ADVANCE_INST(_dreg, _sreg, _count) \
-        ldrh    _dreg, [_sreg, #(_count*2)]!
+        ldrh    _dreg, [_sreg, #((_count)*2)]!
 
 /*
  * Fetch the next instruction from an offset specified by _reg.  Updates
  * rPC to point to the next instruction.  "_reg" must specify the distance
  * in bytes, *not* 16-bit code units, and may be a signed value.
  *
- * We want to write "ldrh rINST, [rPC, _reg, lsl #2]!", but some of the
+ * We want to write "ldrh rINST, [rPC, _reg, lsl #1]!", but some of the
  * bits that hold the shift distance are used for the half/byte/sign flags.
  * In some cases we can pre-double _reg for free, so we require a byte offset
  * here.
@@ -151,15 +151,15 @@ unspecified registers or condition codes.
  *
  * The "_S" variant works the same but treats the value as signed.
  */
-#define FETCH(_reg, _count)     ldrh    _reg, [rPC, #(_count*2)]
-#define FETCH_S(_reg, _count)   ldrsh   _reg, [rPC, #(_count*2)]
+#define FETCH(_reg, _count)     ldrh    _reg, [rPC, #((_count)*2)]
+#define FETCH_S(_reg, _count)   ldrsh   _reg, [rPC, #((_count)*2)]
 
 /*
  * Fetch one byte from an offset past the current PC.  Pass in the same
  * "_count" as you would for FETCH, and an additional 0/1 indicating which
  * byte of the halfword you want (lo/hi).
  */
-#define FETCH_B(_reg, _count, _byte) ldrb     _reg, [rPC, #(_count*2+_byte)]
+#define FETCH_B(_reg, _count, _byte) ldrb     _reg, [rPC, #((_count)*2+(_byte))]
 
 /*
  * Put the instruction's opcode field into the specified register.
@@ -176,6 +176,7 @@ unspecified registers or condition codes.
  * interpreter, we don't have to worry about pre-ARMv5 THUMB interwork.
  */
 #define GOTO_OPCODE(_reg)       add     pc, rIBASE, _reg, lsl #6
+#define GOTO_OPCODE_BASE(_base,_reg)  add     pc, _base, _reg, lsl #6
 #define GOTO_OPCODE_IFEQ(_reg)  addeq   pc, rIBASE, _reg, lsl #6
 #define GOTO_OPCODE_IFNE(_reg)  addne   pc, rIBASE, _reg, lsl #6
 
@@ -184,11 +185,6 @@ unspecified registers or condition codes.
  */
 #define GET_VREG(_reg, _vreg)   ldr     _reg, [rFP, _vreg, lsl #2]
 #define SET_VREG(_reg, _vreg)   str     _reg, [rFP, _vreg, lsl #2]
-
-#if defined(WITH_JIT)
-#define GET_JIT_PROF_TABLE(_reg)    ldr     _reg,[rGLUE,#offGlue_pJitProfTable]
-#define GET_JIT_THRESHOLD(_reg)     ldr     _reg,[rGLUE,#offGlue_jitThreshold]
-#endif
 
 /*
  * Convert a virtual register index into an address.
@@ -214,39 +210,15 @@ unspecified registers or condition codes.
  */
 
 /*
- * Macro for "LDR PC,xxx", which is not allowed pre-ARMv5.  Essentially a
- * one-way branch.
- *
- * May modify IP.  Does not modify LR.
+ * Macro for data memory barrier; not meaningful pre-ARMv6K.
  */
-.macro  LDR_PC source
-    ldr     pc, \source
-.endm
-
-/*
- * Macro for "MOV LR,PC / LDR PC,xxx", which is not allowed pre-ARMv5.
- * Jump to subroutine.
- *
- * May modify IP and LR.
- */
-.macro  LDR_PC_LR source
-    mov     lr, pc
-    ldr     pc, \source
-.endm
-
-/*
- * Macro for "LDMFD SP!, {...regs...,PC}".
- *
- * May modify IP and LR.
- */
-.macro  LDMFD_PC regs
-    ldmfd   sp!, {\regs,pc}
+.macro  SMP_DMB
 .endm
 
 /*
  * Macro for data memory barrier; not meaningful pre-ARMv6K.
  */
-.macro  SMP_DMB
+.macro  SMP_DMB_ST
 .endm
 
 /* File: armv5te/entry.S */
@@ -290,10 +262,9 @@ unspecified registers or condition codes.
 
 /*
  * On entry:
- *  r0  MterpGlue* glue
+ *  r0  Thread* self
  *
- * This function returns a boolean "changeInterp" value.  The return comes
- * via a call to dvmMterpStdBail().
+ * The return comes via a call to dvmMterpStdBail().
  */
 dvmMterpStdRun:
 #define MTERP_ENTRY1 \
@@ -308,29 +279,25 @@ dvmMterpStdRun:
     MTERP_ENTRY2
 
     /* save stack pointer, add magic word for debuggerd */
-    str     sp, [r0, #offGlue_bailPtr]  @ save SP for eventual return
+    str     sp, [r0, #offThread_bailPtr]  @ save SP for eventual return
 
     /* set up "named" registers, figure out entry point */
-    mov     rGLUE, r0                   @ set rGLUE
-    ldr     r1, [r0, #offGlue_entryPoint]   @ enum is 4 bytes in aapcs-EABI
-    LOAD_PC_FP_FROM_GLUE()              @ load rPC and rFP from "glue"
-    adr     rIBASE, dvmAsmInstructionStart  @ set rIBASE
-    cmp     r1, #kInterpEntryInstr      @ usual case?
-    bne     .Lnot_instr                 @ no, handle it
+    mov     rSELF, r0                   @ set rSELF
+    LOAD_PC_FP_FROM_SELF()              @ load rPC and rFP from "thread"
+    ldr     rIBASE, [rSELF, #offThread_curHandlerTable] @ set rIBASE
 
 #if defined(WITH_JIT)
 .LentryInstr:
-    ldr     r10, [rGLUE, #offGlue_self] @ callee saved r10 <- glue->self
     /* Entry is always a possible trace start */
-    GET_JIT_PROF_TABLE(r0)
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
     FETCH_INST()
     mov     r1, #0                      @ prepare the value for the new state
-    str     r1, [r10, #offThread_inJitCodeCache] @ back to the interp land
+    str     r1, [rSELF, #offThread_inJitCodeCache] @ back to the interp land
     cmp     r0,#0                       @ is profiling disabled?
 #if !defined(WITH_SELF_VERIFICATION)
     bne     common_updateProfile        @ profiling is enabled
 #else
-    ldr     r2, [r10, #offThread_shadowSpace]   @ to find out the jit exit state
+    ldr     r2, [rSELF, #offThread_shadowSpace] @ to find out the jit exit state
     beq     1f                          @ profiling is disabled
     ldr     r3, [r2, #offShadowSpace_jitExitState]  @ jit exit state
     cmp     r3, #kSVSTraceSelect        @ hot trace following?
@@ -350,39 +317,13 @@ dvmMterpStdRun:
     GOTO_OPCODE(ip)                     @ jump to next instruction
 #endif
 
-.Lnot_instr:
-    cmp     r1, #kInterpEntryReturn     @ were we returning from a method?
-    beq     common_returnFromMethod
-
-.Lnot_return:
-    cmp     r1, #kInterpEntryThrow      @ were we throwing an exception?
-    beq     common_exceptionThrown
-
-#if defined(WITH_JIT)
-.Lnot_throw:
-    ldr     r10,[rGLUE, #offGlue_jitResumeNPC]
-    ldr     r2,[rGLUE, #offGlue_jitResumeDPC]
-    cmp     r1, #kInterpEntryResume     @ resuming after Jit single-step?
-    bne     .Lbad_arg
-    cmp     rPC,r2
-    bne     .LentryInstr                @ must have branched, don't resume
-#if defined(WITH_SELF_VERIFICATION)
-    @ glue->entryPoint will be set in dvmSelfVerificationSaveState
-    b       jitSVShadowRunStart         @ re-enter the translation after the
-                                        @ single-stepped instruction
-    @noreturn
-#endif
-    mov     r1, #kInterpEntryInstr
-    str     r1, [rGLUE, #offGlue_entryPoint]
-    bx      r10                         @ re-enter the translation
-#endif
-
 .Lbad_arg:
     ldr     r0, strBadEntryPoint
     @ r1 holds value of entryPoint
     bl      printf
     bl      dvmAbort
     .fnend
+    .size   dvmMterpStdRun, .-dvmMterpStdRun
 
 
     .global dvmMterpStdBail
@@ -398,14 +339,12 @@ dvmMterpStdRun:
  * LR to PC.
  *
  * On entry:
- *  r0  MterpGlue* glue
- *  r1  bool changeInterp
+ *  r0  Thread* self
  */
 dvmMterpStdBail:
-    ldr     sp, [r0, #offGlue_bailPtr]      @ sp<- saved SP
-    mov     r0, r1                          @ return the changeInterp value
+    ldr     sp, [r0, #offThread_bailPtr]    @ sp<- saved SP
     add     sp, sp, #4                      @ un-align 64
-    LDMFD_PC "r4-r10,fp"                    @ restore 9 regs and return
+    ldmfd   sp!, {r4-r10,fp,pc}             @ restore 9 regs and return
 
 
 /*
@@ -587,7 +526,7 @@ dalvik_inst:
     /* op vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     FETCH_ADVANCE_INST(1)               @ advance rPC, load rINST
-    ldr     r0, [rGLUE, #offGlue_retval]    @ r0<- glue->retval.i
+    ldr     r0, [rSELF, #offThread_retval]    @ r0<- self->retval.i
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     SET_VREG(r0, r2)                    @ fp[AA]<- r0
     GOTO_OPCODE(ip)                     @ jump to next instruction
@@ -598,7 +537,7 @@ dalvik_inst:
 /* File: armv5te/OP_MOVE_RESULT_WIDE.S */
     /* move-result-wide vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
-    add     r3, rGLUE, #offGlue_retval  @ r3<- &glue->retval
+    add     r3, rSELF, #offThread_retval  @ r3<- &self->retval
     add     r2, rFP, r2, lsl #2         @ r2<- &fp[AA]
     ldmia   r3, {r0-r1}                 @ r0/r1<- retval.j
     FETCH_ADVANCE_INST(1)               @ advance rPC, load rINST
@@ -615,7 +554,7 @@ dalvik_inst:
     /* op vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     FETCH_ADVANCE_INST(1)               @ advance rPC, load rINST
-    ldr     r0, [rGLUE, #offGlue_retval]    @ r0<- glue->retval.i
+    ldr     r0, [rSELF, #offThread_retval]    @ r0<- self->retval.i
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     SET_VREG(r0, r2)                    @ fp[AA]<- r0
     GOTO_OPCODE(ip)                     @ jump to next instruction
@@ -626,14 +565,13 @@ dalvik_inst:
 .L_OP_MOVE_EXCEPTION: /* 0x0d */
 /* File: armv5te/OP_MOVE_EXCEPTION.S */
     /* move-exception vAA */
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
     mov     r2, rINST, lsr #8           @ r2<- AA
-    ldr     r3, [r0, #offThread_exception]  @ r3<- dvmGetException bypass
+    ldr     r3, [rSELF, #offThread_exception]  @ r3<- dvmGetException bypass
     mov     r1, #0                      @ r1<- 0
     FETCH_ADVANCE_INST(1)               @ advance rPC, load rINST
     SET_VREG(r3, r2)                    @ fp[AA]<- exception obj
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    str     r1, [r0, #offThread_exception]  @ dvmClearException bypass
+    str     r1, [rSELF, #offThread_exception]  @ dvmClearException bypass
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* ------------------------------ */
@@ -647,7 +585,7 @@ dalvik_inst:
 .L_OP_RETURN: /* 0x0f */
 /* File: armv5te/OP_RETURN.S */
     /*
-     * Return a 32-bit value.  Copies the return value into the "glue"
+     * Return a 32-bit value.  Copies the return value into the "thread"
      * structure, then jumps to the return handler.
      *
      * for: return, return-object
@@ -655,7 +593,7 @@ dalvik_inst:
     /* op vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     GET_VREG(r0, r2)                    @ r0<- vAA
-    str     r0, [rGLUE, #offGlue_retval] @ retval.i <- vAA
+    str     r0, [rSELF, #offThread_retval] @ retval.i <- vAA
     b       common_returnFromMethod
 
 /* ------------------------------ */
@@ -663,13 +601,13 @@ dalvik_inst:
 .L_OP_RETURN_WIDE: /* 0x10 */
 /* File: armv5te/OP_RETURN_WIDE.S */
     /*
-     * Return a 64-bit value.  Copies the return value into the "glue"
+     * Return a 64-bit value.  Copies the return value into the "thread"
      * structure, then jumps to the return handler.
      */
     /* return-wide vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     add     r2, rFP, r2, lsl #2         @ r2<- &fp[AA]
-    add     r3, rGLUE, #offGlue_retval  @ r3<- &glue->retval
+    add     r3, rSELF, #offThread_retval  @ r3<- &self->retval
     ldmia   r2, {r0-r1}                 @ r0/r1 <- vAA/vAA+1
     stmia   r3, {r0-r1}                 @ retval<- r0/r1
     b       common_returnFromMethod
@@ -680,7 +618,7 @@ dalvik_inst:
 /* File: armv5te/OP_RETURN_OBJECT.S */
 /* File: armv5te/OP_RETURN.S */
     /*
-     * Return a 32-bit value.  Copies the return value into the "glue"
+     * Return a 32-bit value.  Copies the return value into the "thread"
      * structure, then jumps to the return handler.
      *
      * for: return, return-object
@@ -688,7 +626,7 @@ dalvik_inst:
     /* op vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     GET_VREG(r0, r2)                    @ r0<- vAA
-    str     r0, [rGLUE, #offGlue_retval] @ retval.i <- vAA
+    str     r0, [rSELF, #offThread_retval] @ retval.i <- vAA
     b       common_returnFromMethod
 
 
@@ -814,7 +752,7 @@ dalvik_inst:
 /* File: armv5te/OP_CONST_STRING.S */
     /* const/string vAA, String@BBBB */
     FETCH(r1, 1)                        @ r1<- BBBB
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- glue->methodClassDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]  @ r2<- self->methodClassDex
     mov     r9, rINST, lsr #8           @ r9<- AA
     ldr     r2, [r2, #offDvmDex_pResStrings]   @ r2<- dvmDex->pResStrings
     ldr     r0, [r2, r1, lsl #2]        @ r0<- pResStrings[BBBB]
@@ -832,7 +770,7 @@ dalvik_inst:
     /* const/string vAA, String@BBBBBBBB */
     FETCH(r0, 1)                        @ r0<- bbbb (low)
     FETCH(r1, 2)                        @ r1<- BBBB (high)
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- glue->methodClassDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]  @ r2<- self->methodClassDex
     mov     r9, rINST, lsr #8           @ r9<- AA
     ldr     r2, [r2, #offDvmDex_pResStrings]   @ r2<- dvmDex->pResStrings
     orr     r1, r0, r1, lsl #16         @ r1<- BBBBbbbb
@@ -850,7 +788,7 @@ dalvik_inst:
 /* File: armv5te/OP_CONST_CLASS.S */
     /* const/class vAA, Class@BBBB */
     FETCH(r1, 1)                        @ r1<- BBBB
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- glue->methodClassDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]  @ r2<- self->methodClassDex
     mov     r9, rINST, lsr #8           @ r9<- AA
     ldr     r2, [r2, #offDvmDex_pResClasses]   @ r2<- dvmDex->pResClasses
     ldr     r0, [r2, r1, lsl #2]        @ r0<- pResClasses[BBBB]
@@ -871,18 +809,12 @@ dalvik_inst:
     /* monitor-enter vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     GET_VREG(r1, r2)                    @ r1<- vAA (object)
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
+    mov     r0, rSELF                   @ r0<- self
     cmp     r1, #0                      @ null object?
-    EXPORT_PC()                         @ need for precise GC, MONITOR_TRACKING
+    EXPORT_PC()                         @ need for precise GC
     beq     common_errNullObject        @ null object, throw an exception
     FETCH_ADVANCE_INST(1)               @ advance rPC, load rINST
     bl      dvmLockObject               @ call(self, obj)
-#ifdef WITH_DEADLOCK_PREDICTION /* implies WITH_MONITOR_TRACKING */
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
-    ldr     r1, [r0, #offThread_exception] @ check for exception
-    cmp     r1, #0
-    bne     common_exceptionThrown      @ exception raised, bail out
-#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
@@ -903,7 +835,7 @@ dalvik_inst:
     GET_VREG(r1, r2)                    @ r1<- vAA (object)
     cmp     r1, #0                      @ null object?
     beq     1f                          @ yes
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
+    mov     r0, rSELF                   @ r0<- self
     bl      dvmUnlockObject             @ r0<- success for unlock(self, obj)
     cmp     r0, #0                      @ failed?
     FETCH_ADVANCE_INST(1)               @ before throw: advance rPC, load rINST
@@ -925,7 +857,7 @@ dalvik_inst:
     mov     r3, rINST, lsr #8           @ r3<- AA
     FETCH(r2, 1)                        @ r2<- BBBB
     GET_VREG(r9, r3)                    @ r9<- object
-    ldr     r0, [rGLUE, #offGlue_methodClassDex]    @ r0<- pDvmDex
+    ldr     r0, [rSELF, #offThread_methodClassDex]    @ r0<- pDvmDex
     cmp     r9, #0                      @ is object null?
     ldr     r0, [r0, #offDvmDex_pResClasses]    @ r0<- pDvmDex->pResClasses
     beq     .LOP_CHECK_CAST_okay            @ null obj, cast always succeeds
@@ -957,7 +889,7 @@ dalvik_inst:
     GET_VREG(r0, r3)                    @ r0<- vB (object)
     and     r9, r9, #15                 @ r9<- A
     cmp     r0, #0                      @ is object null?
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- pDvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- pDvmDex
     beq     .LOP_INSTANCE_OF_store           @ null obj, not an instance, store r0
     FETCH(r3, 1)                        @ r3<- CCCC
     ldr     r2, [r2, #offDvmDex_pResClasses]    @ r2<- pDvmDex->pResClasses
@@ -997,10 +929,13 @@ dalvik_inst:
      * Create a new instance of a class.
      */
     /* new-instance vAA, class@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResClasses]    @ r3<- pDvmDex->pResClasses
     ldr     r0, [r3, r1, lsl #2]        @ r0<- resolved class
+#if defined(WITH_JIT)
+    add     r10, r3, r1, lsl #2         @ r10<- &resolved_class
+#endif
     EXPORT_PC()                         @ req'd for init, resolve, alloc
     cmp     r0, #0                      @ already resolved?
     beq     .LOP_NEW_INSTANCE_resolve         @ no, resolve it now
@@ -1027,12 +962,12 @@ dalvik_inst:
     /* new-array vA, vB, class@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
     FETCH(r2, 1)                        @ r2<- CCCC
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     GET_VREG(r1, r0)                    @ r1<- vB (array length)
     ldr     r3, [r3, #offDvmDex_pResClasses]    @ r3<- pDvmDex->pResClasses
     cmp     r1, #0                      @ check length
     ldr     r0, [r3, r2, lsl #2]        @ r0<- resolved class
-    bmi     common_errNegativeArraySize @ negative length, bail
+    bmi     common_errNegativeArraySize @ negative length, bail - len in r1
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ req'd for resolve, alloc
     bne     .LOP_NEW_ARRAY_finish          @ resolved, continue
@@ -1049,7 +984,7 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op {vCCCC..v(CCCC+AA-1)}, type@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResClasses]    @ r3<- pDvmDex->pResClasses
     EXPORT_PC()                         @ need for resolve and alloc
@@ -1057,7 +992,7 @@ dalvik_inst:
     mov     r10, rINST, lsr #8          @ r10<- AA or BA
     cmp     r0, #0                      @ already resolved?
     bne     .LOP_FILLED_NEW_ARRAY_continue        @ yes, continue on
-8:  ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+8:  ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     mov     r2, #0                      @ r2<- false
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveClass             @ r0<- call(clazz, ref)
@@ -1077,7 +1012,7 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op {vCCCC..v(CCCC+AA-1)}, type@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResClasses]    @ r3<- pDvmDex->pResClasses
     EXPORT_PC()                         @ need for resolve and alloc
@@ -1085,7 +1020,7 @@ dalvik_inst:
     mov     r10, rINST, lsr #8          @ r10<- AA or BA
     cmp     r0, #0                      @ already resolved?
     bne     .LOP_FILLED_NEW_ARRAY_RANGE_continue        @ yes, continue on
-8:  ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+8:  ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     mov     r2, #0                      @ r2<- false
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveClass             @ r0<- call(clazz, ref)
@@ -1123,12 +1058,11 @@ dalvik_inst:
     /* throw vAA */
     mov     r2, rINST, lsr #8           @ r2<- AA
     GET_VREG(r1, r2)                    @ r1<- vAA (exception object)
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
     EXPORT_PC()                         @ exception handler can throw
     cmp     r1, #0                      @ null object?
     beq     common_errNullObject        @ yes, throw an NPE instead
     @ bypass dvmSetException, just store it
-    str     r1, [r0, #offThread_exception]  @ thread->exception<- obj
+    str     r1, [rSELF, #offThread_exception]  @ thread->exception<- obj
     b       common_exceptionThrown
 
 /* ------------------------------ */
@@ -1142,22 +1076,19 @@ dalvik_inst:
      * double to get a byte offset.
      */
     /* goto +AA */
+    /* tuning: use sbfx for 6t2+ targets */
     mov     r0, rINST, lsl #16          @ r0<- AAxx0000
-    movs    r9, r0, asr #24             @ r9<- ssssssAA (sign-extended)
-    mov     r9, r9, lsl #1              @ r9<- byte offset
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
+    movs    r1, r0, asr #24             @ r1<- ssssssAA (sign-extended)
+    add     r2, r1, r1                  @ r2<- byte offset, set flags
+       @ If backwards branch refresh rIBASE
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
-#else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    bmi     common_testUpdateProfile    @ (r0) check for trace hotness
 #endif
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* ------------------------------ */
     .balign 64
@@ -1171,20 +1102,15 @@ dalvik_inst:
      */
     /* goto/16 +AAAA */
     FETCH_S(r0, 1)                      @ r0<- ssssAAAA (sign-extended)
-    movs    r9, r0, asl #1              @ r9<- byte offset, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
+    adds    r1, r0, r0                  @ r1<- byte offset, flags set
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
-#else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    bmi     common_testUpdateProfile    @ (r0) hot trace head?
 #endif
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* ------------------------------ */
     .balign 64
@@ -1197,29 +1123,26 @@ dalvik_inst:
      * double to get a byte offset.
      *
      * Unlike most opcodes, this one is allowed to branch to itself, so
-     * our "backward branch" test must be "<=0" instead of "<0".  The ORRS
-     * instruction doesn't affect the V flag, so we need to clear it
-     * explicitly.
+     * our "backward branch" test must be "<=0" instead of "<0".  Because
+     * we need the V bit set, we'll use an adds to convert from Dalvik
+     * offset to byte offset.
      */
     /* goto/32 +AAAAAAAA */
     FETCH(r0, 1)                        @ r0<- aaaa (lo)
     FETCH(r1, 2)                        @ r1<- AAAA (hi)
-    cmp     ip, ip                      @ (clear V flag during stall)
-    orrs    r0, r0, r1, lsl #16         @ r0<- AAAAaaaa, check sign
-    mov     r9, r0, asl #1              @ r9<- byte offset
-    ble     common_backwardBranch       @ backward branch, do periodic checks
+    orr     r0, r0, r1, lsl #16         @ r0<- AAAAaaaa
+    adds    r1, r0, r0                  @ r1<- byte offset
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrle   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+    ble     common_testUpdateProfile    @ (r0) hot trace head?
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+    ldrle   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 /* ------------------------------ */
     .balign 64
@@ -1232,6 +1155,9 @@ dalvik_inst:
      * We don't really expect backward branches in a switch statement, but
      * they're perfectly legal, so we check for them here.
      *
+     * When the JIT is present, all targets are considered treated as
+     * a potential trace heads regardless of branch direction.
+     *
      * for: packed-switch, sparse-switch
      */
     /* op vAA, +BBBB */
@@ -1242,21 +1168,19 @@ dalvik_inst:
     GET_VREG(r1, r3)                    @ r1<- vAA
     add     r0, rPC, r0, lsl #1         @ r0<- PC + BBBBbbbb*2
     bl      dvmInterpHandlePackedSwitch                       @ r0<- code-unit branch offset
-    movs    r9, r0, asl #1              @ r9<- branch byte offset, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-    beq     common_backwardBranch       @ (want to use BLE but V is unknown)
+    adds    r1, r0, r0                  @ r1<- byte offset; clear V
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    cmp     r0,#0
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrle   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+    cmp     r0, #0
     bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrle   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 /* ------------------------------ */
     .balign 64
@@ -1270,6 +1194,9 @@ dalvik_inst:
      * We don't really expect backward branches in a switch statement, but
      * they're perfectly legal, so we check for them here.
      *
+     * When the JIT is present, all targets are considered treated as
+     * a potential trace heads regardless of branch direction.
+     *
      * for: packed-switch, sparse-switch
      */
     /* op vAA, +BBBB */
@@ -1280,21 +1207,19 @@ dalvik_inst:
     GET_VREG(r1, r3)                    @ r1<- vAA
     add     r0, rPC, r0, lsl #1         @ r0<- PC + BBBBbbbb*2
     bl      dvmInterpHandleSparseSwitch                       @ r0<- code-unit branch offset
-    movs    r9, r0, asl #1              @ r9<- branch byte offset, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-    beq     common_backwardBranch       @ (want to use BLE but V is unknown)
+    adds    r1, r0, r0                  @ r1<- byte offset; clear V
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    cmp     r0,#0
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrle   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+    cmp     r0, #0
     bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrle   rIBASE, [rSELF, #offThread_curHandlerTable] @ refresh handler base
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1534,22 +1459,21 @@ dalvik_inst:
     and     r0, r0, #15
     GET_VREG(r3, r1)                    @ r3<- vB
     GET_VREG(r2, r0)                    @ r2<- vA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, r3                      @ compare (vA, vB)
-    bne  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ yes, do periodic checks
-1:
+    movne r1, #2                 @ r1<- BYTE branch dist for not-taken
+    adds    r2, r1, r1                  @ convert to bytes, check sign
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    b        common_testUpdateProfile
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+    cmp     r0,#0
+    bne     common_updateProfile
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1570,22 +1494,21 @@ dalvik_inst:
     and     r0, r0, #15
     GET_VREG(r3, r1)                    @ r3<- vB
     GET_VREG(r2, r0)                    @ r2<- vA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, r3                      @ compare (vA, vB)
-    beq  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ yes, do periodic checks
-1:
+    moveq r1, #2                 @ r1<- BYTE branch dist for not-taken
+    adds    r2, r1, r1                  @ convert to bytes, check sign
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    b        common_testUpdateProfile
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+    cmp     r0,#0
+    bne     common_updateProfile
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1606,22 +1529,21 @@ dalvik_inst:
     and     r0, r0, #15
     GET_VREG(r3, r1)                    @ r3<- vB
     GET_VREG(r2, r0)                    @ r2<- vA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, r3                      @ compare (vA, vB)
-    bge  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ yes, do periodic checks
-1:
+    movge r1, #2                 @ r1<- BYTE branch dist for not-taken
+    adds    r2, r1, r1                  @ convert to bytes, check sign
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    b        common_testUpdateProfile
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+    cmp     r0,#0
+    bne     common_updateProfile
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1642,22 +1564,21 @@ dalvik_inst:
     and     r0, r0, #15
     GET_VREG(r3, r1)                    @ r3<- vB
     GET_VREG(r2, r0)                    @ r2<- vA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, r3                      @ compare (vA, vB)
-    blt  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ yes, do periodic checks
-1:
+    movlt r1, #2                 @ r1<- BYTE branch dist for not-taken
+    adds    r2, r1, r1                  @ convert to bytes, check sign
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    b        common_testUpdateProfile
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+    cmp     r0,#0
+    bne     common_updateProfile
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1678,22 +1599,21 @@ dalvik_inst:
     and     r0, r0, #15
     GET_VREG(r3, r1)                    @ r3<- vB
     GET_VREG(r2, r0)                    @ r2<- vA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, r3                      @ compare (vA, vB)
-    ble  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ yes, do periodic checks
-1:
+    movle r1, #2                 @ r1<- BYTE branch dist for not-taken
+    adds    r2, r1, r1                  @ convert to bytes, check sign
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    b        common_testUpdateProfile
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+    cmp     r0,#0
+    bne     common_updateProfile
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1714,22 +1634,21 @@ dalvik_inst:
     and     r0, r0, #15
     GET_VREG(r3, r1)                    @ r3<- vB
     GET_VREG(r2, r0)                    @ r2<- vA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, r3                      @ compare (vA, vB)
-    bgt  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ yes, do periodic checks
-1:
+    movgt r1, #2                 @ r1<- BYTE branch dist for not-taken
+    adds    r2, r1, r1                  @ convert to bytes, check sign
+    FETCH_ADVANCE_INST_RB(r2)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    b        common_testUpdateProfile
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+    cmp     r0,#0
+    bne     common_updateProfile
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1747,25 +1666,21 @@ dalvik_inst:
     /* if-cmp vAA, +BBBB */
     mov     r0, rINST, lsr #8           @ r0<- AA
     GET_VREG(r2, r0)                    @ r2<- vAA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, #0                      @ compare (vA, 0)
-    bne  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-1:
+    movne r1, #2                 @ r1<- inst branch dist for not-taken
+    adds    r1, r1, r1                  @ convert to bytes & set flags
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
     cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    bne     common_updateProfile        @ test for JIT off at target
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1783,25 +1698,21 @@ dalvik_inst:
     /* if-cmp vAA, +BBBB */
     mov     r0, rINST, lsr #8           @ r0<- AA
     GET_VREG(r2, r0)                    @ r2<- vAA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, #0                      @ compare (vA, 0)
-    beq  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-1:
+    moveq r1, #2                 @ r1<- inst branch dist for not-taken
+    adds    r1, r1, r1                  @ convert to bytes & set flags
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
     cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    bne     common_updateProfile        @ test for JIT off at target
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1819,25 +1730,21 @@ dalvik_inst:
     /* if-cmp vAA, +BBBB */
     mov     r0, rINST, lsr #8           @ r0<- AA
     GET_VREG(r2, r0)                    @ r2<- vAA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, #0                      @ compare (vA, 0)
-    bge  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-1:
+    movge r1, #2                 @ r1<- inst branch dist for not-taken
+    adds    r1, r1, r1                  @ convert to bytes & set flags
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
     cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    bne     common_updateProfile        @ test for JIT off at target
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1855,25 +1762,21 @@ dalvik_inst:
     /* if-cmp vAA, +BBBB */
     mov     r0, rINST, lsr #8           @ r0<- AA
     GET_VREG(r2, r0)                    @ r2<- vAA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, #0                      @ compare (vA, 0)
-    blt  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-1:
+    movlt r1, #2                 @ r1<- inst branch dist for not-taken
+    adds    r1, r1, r1                  @ convert to bytes & set flags
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
     cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    bne     common_updateProfile        @ test for JIT off at target
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1891,25 +1794,21 @@ dalvik_inst:
     /* if-cmp vAA, +BBBB */
     mov     r0, rINST, lsr #8           @ r0<- AA
     GET_VREG(r2, r0)                    @ r2<- vAA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, #0                      @ compare (vA, 0)
-    ble  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-1:
+    movle r1, #2                 @ r1<- inst branch dist for not-taken
+    adds    r1, r1, r1                  @ convert to bytes & set flags
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
     cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    bne     common_updateProfile        @ test for JIT off at target
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -1927,25 +1826,21 @@ dalvik_inst:
     /* if-cmp vAA, +BBBB */
     mov     r0, rINST, lsr #8           @ r0<- AA
     GET_VREG(r2, r0)                    @ r2<- vAA
-    mov     r9, #4                      @ r0<- BYTE branch dist for not-taken
+    FETCH_S(r1, 1)                      @ r1<- branch offset, in code units
     cmp     r2, #0                      @ compare (vA, 0)
-    bgt  1f                      @ branch to 1 if comparison failed
-    FETCH_S(r9, 1)                      @ r9<- branch offset, in code units
-    movs    r9, r9, asl #1              @ convert to bytes, check sign
-    bmi     common_backwardBranch       @ backward branch, do periodic checks
-1:
+    movgt r1, #2                 @ r1<- inst branch dist for not-taken
+    adds    r1, r1, r1                  @ convert to bytes & set flags
+    FETCH_ADVANCE_INST_RB(r1)           @ update rPC, load rINST
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
     cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
+    bne     common_updateProfile        @ test for JIT off at target
 #else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
+    ldrmi   rIBASE, [rSELF, #offThread_curHandlerTable]   @ refresh table base
+#endif
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
 
 
 /* ------------------------------ */
@@ -2277,9 +2172,6 @@ dalvik_inst:
 /* File: armv5te/OP_APUT_OBJECT.S */
     /*
      * Store an object into an array.  vBB[vCC] <- vAA.
-     *
-     * Note: using the usual FETCH/and/shift stuff, this fits in exactly 17
-     * instructions.  We use a pair of FETCH_Bs instead.
      */
     /* op vAA, vBB, vCC */
     FETCH(r0, 1)                        @ r0<- CCBB
@@ -2287,13 +2179,13 @@ dalvik_inst:
     and     r2, r0, #255                @ r2<- BB
     mov     r3, r0, lsr #8              @ r3<- CC
     GET_VREG(rINST, r2)                 @ rINST<- vBB (array object)
-    GET_VREG(r0, r3)                    @ r0<- vCC (requested index)
+    GET_VREG(r1, r3)                    @ r1<- vCC (requested index)
     cmp     rINST, #0                   @ null array object?
     GET_VREG(r9, r9)                    @ r9<- vAA
     beq     common_errNullObject        @ yes, bail
     ldr     r3, [rINST, #offArrayObject_length]   @ r3<- arrayObj->length
-    add     r10, rINST, r0, lsl #2      @ r10<- arrayObj + index*width
-    cmp     r0, r3                      @ compare unsigned index, length
+    add     r10, rINST, r1, lsl #2      @ r10<- arrayObj + index*width
+    cmp     r1, r3                      @ compare unsigned index, length
     bcc     .LOP_APUT_OBJECT_finish          @ we're okay, continue on
     b       common_errArrayIndex        @ index >= length, bail
 
@@ -2437,14 +2329,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2461,14 +2353,14 @@ dalvik_inst:
      */
     /* iget-wide vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_WIDE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method] @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method] @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2488,14 +2380,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_OBJECT_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2517,14 +2409,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_BOOLEAN_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2546,14 +2438,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_BYTE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2575,14 +2467,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_CHAR_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2604,14 +2496,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_SHORT_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2631,14 +2523,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2652,14 +2544,14 @@ dalvik_inst:
 /* File: armv5te/OP_IPUT_WIDE.S */
     /* iput-wide vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_WIDE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method] @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method] @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2678,14 +2570,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_OBJECT_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2706,14 +2598,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_BOOLEAN_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2735,14 +2627,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_BYTE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2764,14 +2656,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_CHAR_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2793,14 +2685,14 @@ dalvik_inst:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_SHORT_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -2819,10 +2711,10 @@ dalvik_inst:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_resolve         @ yes, do resolve
 .LOP_SGET_finish: @ field ptr in r0
@@ -2842,10 +2734,10 @@ dalvik_inst:
      * 64-bit SGET handler.
      */
     /* sget-wide vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_WIDE_resolve         @ yes, do resolve
 .LOP_SGET_WIDE_finish:
@@ -2873,10 +2765,10 @@ dalvik_inst:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_OBJECT_resolve         @ yes, do resolve
 .LOP_SGET_OBJECT_finish: @ field ptr in r0
@@ -2900,10 +2792,10 @@ dalvik_inst:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_BOOLEAN_resolve         @ yes, do resolve
 .LOP_SGET_BOOLEAN_finish: @ field ptr in r0
@@ -2927,10 +2819,10 @@ dalvik_inst:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_BYTE_resolve         @ yes, do resolve
 .LOP_SGET_BYTE_finish: @ field ptr in r0
@@ -2954,10 +2846,10 @@ dalvik_inst:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_CHAR_resolve         @ yes, do resolve
 .LOP_SGET_CHAR_finish: @ field ptr in r0
@@ -2981,10 +2873,10 @@ dalvik_inst:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_SHORT_resolve         @ yes, do resolve
 .LOP_SGET_SHORT_finish: @ field ptr in r0
@@ -3007,10 +2899,10 @@ dalvik_inst:
      * for: sput, sput-boolean, sput-byte, sput-char, sput-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_resolve         @ yes, do resolve
 .LOP_SPUT_finish:   @ field ptr in r0
@@ -3018,8 +2910,9 @@ dalvik_inst:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_VREG(r1, r2)                    @ r1<- fp[AA]
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                        @ releasing store
     str     r1, [r0, #offStaticField_value] @ field<- vAA
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* ------------------------------ */
@@ -3030,11 +2923,11 @@ dalvik_inst:
      * 64-bit SPUT handler.
      */
     /* sput-wide vAA, field@BBBB */
-    ldr     r0, [rGLUE, #offGlue_methodClassDex]  @ r0<- DvmDex
+    ldr     r0, [rSELF, #offThread_methodClassDex]  @ r0<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r0, [r0, #offDvmDex_pResFields] @ r0<- dvmDex->pResFields
+    ldr     r10, [r0, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
     mov     r9, rINST, lsr #8           @ r9<- AA
-    ldr     r2, [r0, r1, lsl #2]        @ r2<- resolved StaticField ptr
+    ldr     r2, [r10, r1, lsl #2]        @ r2<- resolved StaticField ptr
     add     r9, rFP, r9, lsl #2         @ r9<- &fp[AA]
     cmp     r2, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_WIDE_resolve         @ yes, do resolve
@@ -3044,7 +2937,7 @@ dalvik_inst:
     GET_INST_OPCODE(r10)                @ extract opcode from rINST
     .if 0
     add     r2, r2, #offStaticField_value @ r2<- pointer to data
-    bl      dvmQuasiAtomicSwap64        @ stores r0/r1 into addr r2
+    bl      dvmQuasiAtomicSwap64Sync    @ stores r0/r1 into addr r2
     .else
     strd    r0, [r2, #offStaticField_value] @ field<- vAA/vAA+1
     .endif
@@ -3060,20 +2953,21 @@ dalvik_inst:
      * for: sput-object, sput-object-volatile
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
-    bne     .LOP_SPUT_OBJECT_finish          @ no, continue
-    ldr     r9, [rGLUE, #offGlue_method]    @ r9<- current method
-    EXPORT_PC()                         @ resolve() could throw, so export now
-    ldr     r0, [r9, #offMethod_clazz]  @ r0<- method->clazz
-    bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
-    cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_OBJECT_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
-
+    beq     .LOP_SPUT_OBJECT_resolve         @ yes, do resolve
+.LOP_SPUT_OBJECT_finish:   @ field ptr in r0
+    mov     r2, rINST, lsr #8           @ r2<- AA
+    FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
+    GET_VREG(r1, r2)                    @ r1<- fp[AA]
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
+    ldr     r9, [r0, #offField_clazz]   @ r9<- field->clazz
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    @ no-op                         @ releasing store
+    b       .LOP_SPUT_OBJECT_end
 
 /* ------------------------------ */
     .balign 64
@@ -3086,10 +2980,10 @@ dalvik_inst:
      * for: sput, sput-boolean, sput-byte, sput-char, sput-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_BOOLEAN_resolve         @ yes, do resolve
 .LOP_SPUT_BOOLEAN_finish:   @ field ptr in r0
@@ -3097,8 +2991,9 @@ dalvik_inst:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_VREG(r1, r2)                    @ r1<- fp[AA]
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                        @ releasing store
     str     r1, [r0, #offStaticField_value] @ field<- vAA
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 
@@ -3113,10 +3008,10 @@ dalvik_inst:
      * for: sput, sput-boolean, sput-byte, sput-char, sput-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_BYTE_resolve         @ yes, do resolve
 .LOP_SPUT_BYTE_finish:   @ field ptr in r0
@@ -3124,8 +3019,9 @@ dalvik_inst:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_VREG(r1, r2)                    @ r1<- fp[AA]
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                        @ releasing store
     str     r1, [r0, #offStaticField_value] @ field<- vAA
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 
@@ -3140,10 +3036,10 @@ dalvik_inst:
      * for: sput, sput-boolean, sput-byte, sput-char, sput-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_CHAR_resolve         @ yes, do resolve
 .LOP_SPUT_CHAR_finish:   @ field ptr in r0
@@ -3151,8 +3047,9 @@ dalvik_inst:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_VREG(r1, r2)                    @ r1<- fp[AA]
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                        @ releasing store
     str     r1, [r0, #offStaticField_value] @ field<- vAA
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 
@@ -3167,10 +3064,10 @@ dalvik_inst:
      * for: sput, sput-boolean, sput-byte, sput-char, sput-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_SHORT_resolve         @ yes, do resolve
 .LOP_SPUT_SHORT_finish:   @ field ptr in r0
@@ -3178,8 +3075,9 @@ dalvik_inst:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_VREG(r1, r2)                    @ r1<- fp[AA]
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                        @ releasing store
     str     r1, [r0, #offStaticField_value] @ field<- vAA
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 
@@ -3194,7 +3092,7 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
@@ -3205,7 +3103,7 @@ dalvik_inst:
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ must export for invoke
     bne     .LOP_INVOKE_VIRTUAL_continue        @ yes, continue on
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     mov     r2, #METHOD_VIRTUAL         @ resolver method type
     bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
@@ -3225,19 +3123,19 @@ dalvik_inst:
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     .if     (!0)
     and     r10, r10, #15               @ r10<- D (or stays CCCC)
     .endif
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
-    GET_VREG(r2, r10)                   @ r2<- "this" ptr
+    GET_VREG(r9, r10)                   @ r9<- "this" ptr
     ldr     r0, [r3, r1, lsl #2]        @ r0<- resolved baseMethod
-    cmp     r2, #0                      @ null "this"?
-    ldr     r9, [rGLUE, #offGlue_method] @ r9<- current method
+    cmp     r9, #0                      @ null "this"?
+    ldr     r10, [rSELF, #offThread_method] @ r10<- current method
     beq     common_errNullObject        @ null "this", throw exception
     cmp     r0, #0                      @ already resolved?
-    ldr     r9, [r9, #offMethod_clazz]  @ r9<- method->clazz
+    ldr     r10, [r10, #offMethod_clazz]  @ r10<- method->clazz
     EXPORT_PC()                         @ must export for invoke
     bne     .LOP_INVOKE_SUPER_continue        @ resolved, continue on
     b       .LOP_INVOKE_SUPER_resolve         @ do resolve now
@@ -3258,7 +3156,7 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
@@ -3268,11 +3166,11 @@ dalvik_inst:
     .endif
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ must export for invoke
-    GET_VREG(r2, r10)                   @ r2<- "this" ptr
+    GET_VREG(r9, r10)                   @ r9<- "this" ptr
     beq     .LOP_INVOKE_DIRECT_resolve         @ not resolved, do it now
 .LOP_INVOKE_DIRECT_finish:
-    cmp     r2, #0                      @ null "this" ref?
-    bne     common_invokeMethodNoRange   @ no, continue on
+    cmp     r9, #0                      @ null "this" ref?
+    bne     common_invokeMethodNoRange   @ r0=method, r9="this"
     b       common_errNullObject        @ yes, throw exception
 
 /* ------------------------------ */
@@ -3286,20 +3184,18 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
+    mov     r9, #0                      @ null "this" in delay slot
     ldr     r0, [r3, r1, lsl #2]        @ r0<- resolved methodToCall
+#if defined(WITH_JIT)
+    add     r10, r3, r1, lsl #2         @ r10<- &resolved_methodToCall
+#endif
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ must export for invoke
     bne     common_invokeMethodNoRange @ yes, continue on
-0:  ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
-    ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
-    mov     r2, #METHOD_STATIC          @ resolver method type
-    bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
-    cmp     r0, #0                      @ got null?
-    bne     common_invokeMethodNoRange @ no, continue
-    b       common_exceptionThrown      @ yes, handle exception
+    b       .LOP_INVOKE_STATIC_resolve
 
 /* ------------------------------ */
     .balign 64
@@ -3318,16 +3214,16 @@ dalvik_inst:
     and     r2, r2, #15                 @ r2<- C (or stays CCCC)
     .endif
     EXPORT_PC()                         @ must export for invoke
-    GET_VREG(r0, r2)                    @ r0<- first arg ("this")
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- methodClassDex
-    cmp     r0, #0                      @ null obj?
-    ldr     r2, [rGLUE, #offGlue_method]  @ r2<- method
+    GET_VREG(r9, r2)                    @ r9<- first arg ("this")
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- methodClassDex
+    cmp     r9, #0                      @ null obj?
+    ldr     r2, [rSELF, #offThread_method]  @ r2<- method
     beq     common_errNullObject        @ yes, fail
-    ldr     r0, [r0, #offObject_clazz]  @ r0<- thisPtr->clazz
+    ldr     r0, [r9, #offObject_clazz]  @ r0<- thisPtr->clazz
     bl      dvmFindInterfaceMethodInCache @ r0<- call(class, ref, method, dex)
     cmp     r0, #0                      @ failed?
     beq     common_exceptionThrown      @ yes, handle exception
-    b       common_invokeMethodNoRange @ jump to common handler
+    b       common_invokeMethodNoRange @ (r0=method, r9="this")
 
 /* ------------------------------ */
     .balign 64
@@ -3349,7 +3245,7 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
@@ -3360,7 +3256,7 @@ dalvik_inst:
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ must export for invoke
     bne     .LOP_INVOKE_VIRTUAL_RANGE_continue        @ yes, continue on
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     mov     r2, #METHOD_VIRTUAL         @ resolver method type
     bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
@@ -3382,19 +3278,19 @@ dalvik_inst:
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     .if     (!1)
     and     r10, r10, #15               @ r10<- D (or stays CCCC)
     .endif
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
-    GET_VREG(r2, r10)                   @ r2<- "this" ptr
+    GET_VREG(r9, r10)                   @ r9<- "this" ptr
     ldr     r0, [r3, r1, lsl #2]        @ r0<- resolved baseMethod
-    cmp     r2, #0                      @ null "this"?
-    ldr     r9, [rGLUE, #offGlue_method] @ r9<- current method
+    cmp     r9, #0                      @ null "this"?
+    ldr     r10, [rSELF, #offThread_method] @ r10<- current method
     beq     common_errNullObject        @ null "this", throw exception
     cmp     r0, #0                      @ already resolved?
-    ldr     r9, [r9, #offMethod_clazz]  @ r9<- method->clazz
+    ldr     r10, [r10, #offMethod_clazz]  @ r10<- method->clazz
     EXPORT_PC()                         @ must export for invoke
     bne     .LOP_INVOKE_SUPER_RANGE_continue        @ resolved, continue on
     b       .LOP_INVOKE_SUPER_RANGE_resolve         @ do resolve now
@@ -3417,7 +3313,7 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
@@ -3427,11 +3323,11 @@ dalvik_inst:
     .endif
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ must export for invoke
-    GET_VREG(r2, r10)                   @ r2<- "this" ptr
+    GET_VREG(r9, r10)                   @ r9<- "this" ptr
     beq     .LOP_INVOKE_DIRECT_RANGE_resolve         @ not resolved, do it now
 .LOP_INVOKE_DIRECT_RANGE_finish:
-    cmp     r2, #0                      @ null "this" ref?
-    bne     common_invokeMethodRange   @ no, continue on
+    cmp     r9, #0                      @ null "this" ref?
+    bne     common_invokeMethodRange   @ r0=method, r9="this"
     b       common_errNullObject        @ yes, throw exception
 
 
@@ -3447,20 +3343,18 @@ dalvik_inst:
      */
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- pDvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- pDvmDex
     FETCH(r1, 1)                        @ r1<- BBBB
     ldr     r3, [r3, #offDvmDex_pResMethods]    @ r3<- pDvmDex->pResMethods
+    mov     r9, #0                      @ null "this" in delay slot
     ldr     r0, [r3, r1, lsl #2]        @ r0<- resolved methodToCall
+#if defined(WITH_JIT)
+    add     r10, r3, r1, lsl #2         @ r10<- &resolved_methodToCall
+#endif
     cmp     r0, #0                      @ already resolved?
     EXPORT_PC()                         @ must export for invoke
     bne     common_invokeMethodRange @ yes, continue on
-0:  ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
-    ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
-    mov     r2, #METHOD_STATIC          @ resolver method type
-    bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
-    cmp     r0, #0                      @ got null?
-    bne     common_invokeMethodRange @ no, continue
-    b       common_exceptionThrown      @ yes, handle exception
+    b       .LOP_INVOKE_STATIC_RANGE_resolve
 
 
 /* ------------------------------ */
@@ -3481,16 +3375,16 @@ dalvik_inst:
     and     r2, r2, #15                 @ r2<- C (or stays CCCC)
     .endif
     EXPORT_PC()                         @ must export for invoke
-    GET_VREG(r0, r2)                    @ r0<- first arg ("this")
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- methodClassDex
-    cmp     r0, #0                      @ null obj?
-    ldr     r2, [rGLUE, #offGlue_method]  @ r2<- method
+    GET_VREG(r9, r2)                    @ r9<- first arg ("this")
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- methodClassDex
+    cmp     r9, #0                      @ null obj?
+    ldr     r2, [rSELF, #offThread_method]  @ r2<- method
     beq     common_errNullObject        @ yes, fail
-    ldr     r0, [r0, #offObject_clazz]  @ r0<- thisPtr->clazz
+    ldr     r0, [r9, #offObject_clazz]  @ r0<- thisPtr->clazz
     bl      dvmFindInterfaceMethodInCache @ r0<- call(class, ref, method, dex)
     cmp     r0, #0                      @ failed?
     beq     common_exceptionThrown      @ yes, handle exception
-    b       common_invokeMethodRange @ jump to common handler
+    b       common_invokeMethodRange @ (r0=method, r9="this")
 
 
 /* ------------------------------ */
@@ -7442,14 +7336,14 @@ d2i_doconv:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_VOLATILE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -7470,14 +7364,14 @@ d2i_doconv:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_VOLATILE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -7497,10 +7391,10 @@ d2i_doconv:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_VOLATILE_resolve         @ yes, do resolve
 .LOP_SGET_VOLATILE_finish: @ field ptr in r0
@@ -7524,10 +7418,10 @@ d2i_doconv:
      * for: sput, sput-boolean, sput-byte, sput-char, sput-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_VOLATILE_resolve         @ yes, do resolve
 .LOP_SPUT_VOLATILE_finish:   @ field ptr in r0
@@ -7535,8 +7429,9 @@ d2i_doconv:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_VREG(r1, r2)                    @ r1<- fp[AA]
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    SMP_DMB                            @ releasing store
+    SMP_DMB_ST                        @ releasing store
     str     r1, [r0, #offStaticField_value] @ field<- vAA
+    SMP_DMB
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 
@@ -7552,14 +7447,14 @@ d2i_doconv:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_OBJECT_VOLATILE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -7578,14 +7473,14 @@ d2i_doconv:
      */
     /* iget-wide vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IGET_WIDE_VOLATILE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method] @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method] @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -7601,14 +7496,14 @@ d2i_doconv:
 /* File: armv5te/OP_IPUT_WIDE.S */
     /* iput-wide vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_WIDE_VOLATILE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method] @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method] @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -7626,10 +7521,10 @@ d2i_doconv:
      * 64-bit SGET handler.
      */
     /* sget-wide vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_WIDE_VOLATILE_resolve         @ yes, do resolve
 .LOP_SGET_WIDE_VOLATILE_finish:
@@ -7656,11 +7551,11 @@ d2i_doconv:
      * 64-bit SPUT handler.
      */
     /* sput-wide vAA, field@BBBB */
-    ldr     r0, [rGLUE, #offGlue_methodClassDex]  @ r0<- DvmDex
+    ldr     r0, [rSELF, #offThread_methodClassDex]  @ r0<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r0, [r0, #offDvmDex_pResFields] @ r0<- dvmDex->pResFields
+    ldr     r10, [r0, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
     mov     r9, rINST, lsr #8           @ r9<- AA
-    ldr     r2, [r0, r1, lsl #2]        @ r2<- resolved StaticField ptr
+    ldr     r2, [r10, r1, lsl #2]        @ r2<- resolved StaticField ptr
     add     r9, rFP, r9, lsl #2         @ r9<- &fp[AA]
     cmp     r2, #0                      @ is resolved entry null?
     beq     .LOP_SPUT_WIDE_VOLATILE_resolve         @ yes, do resolve
@@ -7670,7 +7565,7 @@ d2i_doconv:
     GET_INST_OPCODE(r10)                @ extract opcode from rINST
     .if 1
     add     r2, r2, #offStaticField_value @ r2<- pointer to data
-    bl      dvmQuasiAtomicSwap64        @ stores r0/r1 into addr r2
+    bl      dvmQuasiAtomicSwap64Sync    @ stores r0/r1 into addr r2
     .else
     strd    r0, [r2, #offStaticField_value] @ field<- vAA/vAA+1
     .endif
@@ -7681,9 +7576,20 @@ d2i_doconv:
     .balign 64
 .L_OP_BREAKPOINT: /* 0xec */
 /* File: armv5te/OP_BREAKPOINT.S */
-/* File: armv5te/unused.S */
-    bl      common_abort
-
+    /*
+     * Breakpoint handler.
+     *
+     * Restart this instruction with the original opcode.  By
+     * the time we get here, the breakpoint will have already been
+     * handled.
+     */
+    mov     r0, rPC
+    bl      dvmGetOriginalOpcode        @ (rPC)
+    FETCH(rINST, 0)                     @ reload OP_BREAKPOINT + rest of inst
+    ldr     r1, [rSELF, #offThread_mainHandlerTable]
+    and     rINST, #0xff00
+    orr     rINST, rINST, r0
+    GOTO_OPCODE_BASE(r1, r0)
 
 /* ------------------------------ */
     .balign 64
@@ -7695,7 +7601,7 @@ d2i_doconv:
      * exception is indicated by AA, with some detail provided by BBBB.
      */
     /* op AA, ref@BBBB */
-    ldr     r0, [rGLUE, #offGlue_method]    @ r0<- glue->method
+    ldr     r0, [rSELF, #offThread_method]    @ r0<- self->method
     FETCH(r2, 1)                        @ r2<- BBBB
     EXPORT_PC()                         @ export the PC
     mov     r1, rINST, lsr #8           @ r1<- AA
@@ -7715,14 +7621,21 @@ d2i_doconv:
      * The first four args are in r0-r3, pointer to return value storage
      * is on the stack.  The function's return value is a flag that tells
      * us if an exception was thrown.
+     *
+     * TUNING: could maintain two tables, pointer in Thread and
+     * swap if profiler/debuggger active.
      */
     /* [opt] execute-inline vAA, {vC, vD, vE, vF}, inline@BBBB */
+    ldrh    r2, [rSELF, #offThread_subMode]
     FETCH(r10, 1)                       @ r10<- BBBB
-    add     r1, rGLUE, #offGlue_retval  @ r1<- &glue->retval
     EXPORT_PC()                         @ can throw
+    ands    r2, #kSubModeDebugProfile   @ Any going on?
+    bne     .LOP_EXECUTE_INLINE_debugmode       @ yes - take slow path
+.LOP_EXECUTE_INLINE_resume:
+    add     r1, rSELF, #offThread_retval  @ r1<- &self->retval
     sub     sp, sp, #8                  @ make room for arg, +64 bit align
     mov     r0, rINST, lsr #12          @ r0<- B
-    str     r1, [sp]                    @ push &glue->retval
+    str     r1, [sp]                    @ push &self->retval
     bl      .LOP_EXECUTE_INLINE_continue        @ make call; will return after
     add     sp, sp, #8                  @ pop stack
     cmp     r0, #0                      @ test boolean result of inline
@@ -7747,12 +7660,16 @@ d2i_doconv:
      * us if an exception was thrown.
      */
     /* [opt] execute-inline/range {vCCCC..v(CCCC+AA-1)}, inline@BBBB */
+    ldrh    r2, [rSELF, #offThread_subMode]
     FETCH(r10, 1)                       @ r10<- BBBB
-    add     r1, rGLUE, #offGlue_retval  @ r1<- &glue->retval
     EXPORT_PC()                         @ can throw
+    ands    r2, #kSubModeDebugProfile   @ Any going on?
+    bne     .LOP_EXECUTE_INLINE_RANGE_debugmode       @ yes - take slow path
+.LOP_EXECUTE_INLINE_RANGE_resume:
+    add     r1, rSELF, #offThread_retval  @ r1<- &self->retval
     sub     sp, sp, #8                  @ make room for arg, +64 bit align
     mov     r0, rINST, lsr #8           @ r0<- AA
-    str     r1, [sp]                    @ push &glue->retval
+    str     r1, [sp]                    @ push &self->retval
     bl      .LOP_EXECUTE_INLINE_RANGE_continue        @ make call; will return after
     add     sp, sp, #8                  @ pop stack
     cmp     r0, #0                      @ test boolean result of inline
@@ -7763,22 +7680,35 @@ d2i_doconv:
 
 /* ------------------------------ */
     .balign 64
-.L_OP_INVOKE_DIRECT_EMPTY: /* 0xf0 */
-/* File: armv5te/OP_INVOKE_DIRECT_EMPTY.S */
+.L_OP_INVOKE_OBJECT_INIT_RANGE: /* 0xf0 */
+/* File: armv5te/OP_INVOKE_OBJECT_INIT_RANGE.S */
     /*
-     * invoke-direct-empty is a no-op in a "standard" interpreter.
+     * Invoke Object.<init> on an object.  In practice we know that
+     * Object's nullary constructor doesn't do anything, so we just
+     * skip it unless a debugger is active.
      */
-    FETCH_ADVANCE_INST(3)               @ advance to next instr, load rINST
+    FETCH(r1, 2)                  @ r1<- CCCC
+    GET_VREG(r0, r1)                    @ r0<- "this" ptr
+    cmp     r0, #0                      @ check for NULL
+    beq     common_errNullObject        @ export PC and throw NPE
+    ldr     r1, [r0, #offObject_clazz]  @ r1<- obj->clazz
+    ldr     r2, [r1, #offClassObject_accessFlags] @ r2<- clazz->accessFlags
+    tst     r2, #CLASS_ISFINALIZABLE    @ is this class finalizable?
+    bne     .LOP_INVOKE_OBJECT_INIT_RANGE_setFinal        @ yes, go
+.LOP_INVOKE_OBJECT_INIT_RANGE_finish:
+    ldrh    r1, [rSELF, #offThread_subMode]
+    ands    r1, #kSubModeDebuggerActive @ debugger active?
+    bne     .LOP_INVOKE_OBJECT_INIT_RANGE_debugger        @ Yes - skip optimization
+    FETCH_ADVANCE_INST(2+1)       @ advance to next instr, load rINST
     GET_INST_OPCODE(ip)                 @ ip<- opcode from rINST
     GOTO_OPCODE(ip)                     @ execute it
 
 /* ------------------------------ */
     .balign 64
-.L_OP_UNUSED_F1: /* 0xf1 */
-/* File: armv5te/OP_UNUSED_F1.S */
-/* File: armv5te/unused.S */
-    bl      common_abort
-
+.L_OP_RETURN_VOID_BARRIER: /* 0xf1 */
+/* File: armv5te/OP_RETURN_VOID_BARRIER.S */
+    SMP_DMB_ST
+    b       common_returnFromMethod
 
 /* ------------------------------ */
     .balign 64
@@ -7891,7 +7821,7 @@ d2i_doconv:
     beq     common_errNullObject        @ object was null
     and     r2, r2, #15
     GET_VREG(r0, r2)                    @ r0<- fp[A]
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     str     r0, [r3, r1]                @ obj.field (always 32 bits)<- r0
     cmp     r0, #0
@@ -7915,14 +7845,14 @@ d2i_doconv:
     .if     (!0)
     and     r3, r3, #15                 @ r3<- C (or stays CCCC)
     .endif
-    GET_VREG(r2, r3)                    @ r2<- vC ("this" ptr)
-    cmp     r2, #0                      @ is "this" null?
+    GET_VREG(r9, r3)                    @ r9<- vC ("this" ptr)
+    cmp     r9, #0                      @ is "this" null?
     beq     common_errNullObject        @ null "this", throw exception
-    ldr     r2, [r2, #offObject_clazz]  @ r2<- thisPtr->clazz
+    ldr     r2, [r9, #offObject_clazz]  @ r2<- thisPtr->clazz
     ldr     r2, [r2, #offClassObject_vtable]    @ r2<- thisPtr->clazz->vtable
     EXPORT_PC()                         @ invoke must export
     ldr     r0, [r2, r1, lsl #2]        @ r3<- vtable[BBBB]
-    bl      common_invokeMethodNoRange @ continue on
+    bl      common_invokeMethodNoRange @ (r0=method, r9="this")
 
 /* ------------------------------ */
     .balign 64
@@ -7941,14 +7871,14 @@ d2i_doconv:
     .if     (!1)
     and     r3, r3, #15                 @ r3<- C (or stays CCCC)
     .endif
-    GET_VREG(r2, r3)                    @ r2<- vC ("this" ptr)
-    cmp     r2, #0                      @ is "this" null?
+    GET_VREG(r9, r3)                    @ r9<- vC ("this" ptr)
+    cmp     r9, #0                      @ is "this" null?
     beq     common_errNullObject        @ null "this", throw exception
-    ldr     r2, [r2, #offObject_clazz]  @ r2<- thisPtr->clazz
+    ldr     r2, [r9, #offObject_clazz]  @ r2<- thisPtr->clazz
     ldr     r2, [r2, #offClassObject_vtable]    @ r2<- thisPtr->clazz->vtable
     EXPORT_PC()                         @ invoke must export
     ldr     r0, [r2, r1, lsl #2]        @ r3<- vtable[BBBB]
-    bl      common_invokeMethodRange @ continue on
+    bl      common_invokeMethodRange @ (r0=method, r9="this")
 
 
 /* ------------------------------ */
@@ -7963,7 +7893,7 @@ d2i_doconv:
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     .if     (!0)
     and     r10, r10, #15               @ r10<- D (or stays CCCC)
     .endif
@@ -7971,12 +7901,12 @@ d2i_doconv:
     ldr     r2, [r2, #offMethod_clazz]  @ r2<- method->clazz
     EXPORT_PC()                         @ must export for invoke
     ldr     r2, [r2, #offClassObject_super]     @ r2<- method->clazz->super
-    GET_VREG(r3, r10)                   @ r3<- "this"
+    GET_VREG(r9, r10)                   @ r9<- "this"
     ldr     r2, [r2, #offClassObject_vtable]    @ r2<- ...clazz->super->vtable
-    cmp     r3, #0                      @ null "this" ref?
+    cmp     r9, #0                      @ null "this" ref?
     ldr     r0, [r2, r1, lsl #2]        @ r0<- super->vtable[BBBB]
     beq     common_errNullObject        @ "this" is null, throw exception
-    bl      common_invokeMethodNoRange @ continue on
+    bl      common_invokeMethodNoRange @ (r0=method, r9="this")
 
 /* ------------------------------ */
     .balign 64
@@ -7991,7 +7921,7 @@ d2i_doconv:
     /* op vB, {vD, vE, vF, vG, vA}, class@CCCC */
     /* op vAA, {vCCCC..v(CCCC+AA-1)}, meth@BBBB */
     FETCH(r10, 2)                       @ r10<- GFED or CCCC
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     .if     (!1)
     and     r10, r10, #15               @ r10<- D (or stays CCCC)
     .endif
@@ -7999,12 +7929,12 @@ d2i_doconv:
     ldr     r2, [r2, #offMethod_clazz]  @ r2<- method->clazz
     EXPORT_PC()                         @ must export for invoke
     ldr     r2, [r2, #offClassObject_super]     @ r2<- method->clazz->super
-    GET_VREG(r3, r10)                   @ r3<- "this"
+    GET_VREG(r9, r10)                   @ r9<- "this"
     ldr     r2, [r2, #offClassObject_vtable]    @ r2<- ...clazz->super->vtable
-    cmp     r3, #0                      @ null "this" ref?
+    cmp     r9, #0                      @ null "this" ref?
     ldr     r0, [r2, r1, lsl #2]        @ r0<- super->vtable[BBBB]
     beq     common_errNullObject        @ "this" is null, throw exception
-    bl      common_invokeMethodRange @ continue on
+    bl      common_invokeMethodRange @ (r0=method, r9="this")
 
 
 /* ------------------------------ */
@@ -8019,14 +7949,14 @@ d2i_doconv:
      */
     /* op vA, vB, field@CCCC */
     mov     r0, rINST, lsr #12          @ r0<- B
-    ldr     r3, [rGLUE, #offGlue_methodClassDex]    @ r3<- DvmDex
+    ldr     r3, [rSELF, #offThread_methodClassDex]    @ r3<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref CCCC
     ldr     r2, [r3, #offDvmDex_pResFields] @ r2<- pDvmDex->pResFields
     GET_VREG(r9, r0)                    @ r9<- fp[B], the object pointer
     ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved InstField ptr
     cmp     r0, #0                      @ is resolved entry null?
     bne     .LOP_IPUT_OBJECT_VOLATILE_finish          @ no, already resolved
-8:  ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+8:  ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
     EXPORT_PC()                         @ resolve() could throw
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveInstField         @ r0<- resolved InstField ptr
@@ -8046,10 +7976,10 @@ d2i_doconv:
      * for: sget, sget-object, sget-boolean, sget-byte, sget-char, sget-short
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
     beq     .LOP_SGET_OBJECT_VOLATILE_resolve         @ yes, do resolve
 .LOP_SGET_OBJECT_VOLATILE_finish: @ field ptr in r0
@@ -8073,20 +8003,21 @@ d2i_doconv:
      * for: sput-object, sput-object-volatile
      */
     /* op vAA, field@BBBB */
-    ldr     r2, [rGLUE, #offGlue_methodClassDex]    @ r2<- DvmDex
+    ldr     r2, [rSELF, #offThread_methodClassDex]    @ r2<- DvmDex
     FETCH(r1, 1)                        @ r1<- field ref BBBB
-    ldr     r2, [r2, #offDvmDex_pResFields] @ r2<- dvmDex->pResFields
-    ldr     r0, [r2, r1, lsl #2]        @ r0<- resolved StaticField ptr
+    ldr     r10, [r2, #offDvmDex_pResFields] @ r10<- dvmDex->pResFields
+    ldr     r0, [r10, r1, lsl #2]        @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ is resolved entry null?
-    bne     .LOP_SPUT_OBJECT_VOLATILE_finish          @ no, continue
-    ldr     r9, [rGLUE, #offGlue_method]    @ r9<- current method
-    EXPORT_PC()                         @ resolve() could throw, so export now
-    ldr     r0, [r9, #offMethod_clazz]  @ r0<- method->clazz
-    bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
-    cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_OBJECT_VOLATILE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
-
+    beq     .LOP_SPUT_OBJECT_VOLATILE_resolve         @ yes, do resolve
+.LOP_SPUT_OBJECT_VOLATILE_finish:   @ field ptr in r0
+    mov     r2, rINST, lsr #8           @ r2<- AA
+    FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
+    GET_VREG(r1, r2)                    @ r1<- fp[AA]
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
+    ldr     r9, [r0, #offField_clazz]   @ r9<- field->clazz
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    SMP_DMB_ST                        @ releasing store
+    b       .LOP_SPUT_OBJECT_VOLATILE_end
 
 
 /* ------------------------------ */
@@ -8095,7 +8026,6 @@ d2i_doconv:
 /* File: armv5te/OP_UNUSED_FF.S */
 /* File: armv5te/unused.S */
     bl      common_abort
-
 
 
     .balign 64
@@ -8123,7 +8053,7 @@ dvmAsmSisterStart:
      */
 .LOP_CONST_STRING_resolve:
     EXPORT_PC()
-    ldr     r0, [rGLUE, #offGlue_method] @ r0<- glue->method
+    ldr     r0, [rSELF, #offThread_method] @ r0<- self->method
     ldr     r0, [r0, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveString            @ r0<- String reference
     cmp     r0, #0                      @ failed?
@@ -8142,7 +8072,7 @@ dvmAsmSisterStart:
      */
 .LOP_CONST_STRING_JUMBO_resolve:
     EXPORT_PC()
-    ldr     r0, [rGLUE, #offGlue_method] @ r0<- glue->method
+    ldr     r0, [rSELF, #offThread_method] @ r0<- self->method
     ldr     r0, [r0, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveString            @ r0<- String reference
     cmp     r0, #0                      @ failed?
@@ -8161,7 +8091,7 @@ dvmAsmSisterStart:
      */
 .LOP_CONST_CLASS_resolve:
     EXPORT_PC()
-    ldr     r0, [rGLUE, #offGlue_method] @ r0<- glue->method
+    ldr     r0, [rSELF, #offThread_method] @ r0<- self->method
     mov     r2, #1                      @ r2<- true
     ldr     r0, [r0, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveClass             @ r0<- Class reference
@@ -8177,21 +8107,20 @@ dvmAsmSisterStart:
     /*
      * Trivial test failed, need to perform full check.  This is common.
      *  r0 holds obj->clazz
-     *  r1 holds class resolved from BBBB
+     *  r1 holds desired class resolved from BBBB
      *  r9 holds object
      */
 .LOP_CHECK_CAST_fullcheck:
+    mov     r10, r1                     @ avoid ClassObject getting clobbered
     bl      dvmInstanceofNonTrivial     @ r0<- boolean result
     cmp     r0, #0                      @ failed?
     bne     .LOP_CHECK_CAST_okay            @ no, success
 
-    @ A cast has failed.  We need to throw a ClassCastException with the
-    @ class of the object that failed to be cast.
+    @ A cast has failed.  We need to throw a ClassCastException.
     EXPORT_PC()                         @ about to throw
-    ldr     r3, [r9, #offObject_clazz]  @ r3<- obj->clazz
-    ldr     r0, .LstrClassCastExceptionPtr
-    ldr     r1, [r3, #offClassObject_descriptor] @ r1<- obj->clazz->descriptor
-    bl      dvmThrowExceptionWithClassMessage
+    ldr     r0, [r9, #offObject_clazz]  @ r0<- obj->clazz (actual class)
+    mov     r1, r10                     @ r1<- desired class
+    bl      dvmThrowClassCastException
     b       common_exceptionThrown
 
     /*
@@ -8202,7 +8131,7 @@ dvmAsmSisterStart:
      */
 .LOP_CHECK_CAST_resolve:
     EXPORT_PC()                         @ resolve() could throw
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     mov     r1, r2                      @ r1<- BBBB
     mov     r2, #0                      @ r2<- false
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
@@ -8212,9 +8141,6 @@ dvmAsmSisterStart:
     mov     r1, r0                      @ r1<- class resolved from BBB
     ldr     r0, [r9, #offObject_clazz]  @ r0<- obj->clazz
     b       .LOP_CHECK_CAST_resolved        @ pick up where we left off
-
-.LstrClassCastExceptionPtr:
-    .word   .LstrClassCastException
 
 /* continuation for OP_INSTANCE_OF */
 
@@ -8258,7 +8184,7 @@ dvmAsmSisterStart:
      */
 .LOP_INSTANCE_OF_resolve:
     EXPORT_PC()                         @ resolve() could throw
-    ldr     r0, [rGLUE, #offGlue_method]    @ r0<- glue->method
+    ldr     r0, [rSELF, #offThread_method]    @ r0<- self->method
     mov     r1, r3                      @ r1<- BBBB
     mov     r2, #1                      @ r2<- true
     ldr     r0, [r0, #offMethod_clazz]  @ r0<- method->clazz
@@ -8277,11 +8203,44 @@ dvmAsmSisterStart:
 .LOP_NEW_INSTANCE_finish: @ r0=new object
     mov     r3, rINST, lsr #8           @ r3<- AA
     cmp     r0, #0                      @ failed?
+#if defined(WITH_JIT)
+    /*
+     * The JIT needs the class to be fully resolved before it can
+     * include this instruction in a trace.
+     */
+    ldrh    r1, [rSELF, #offThread_subMode]
     beq     common_exceptionThrown      @ yes, handle the exception
+    ands    r1, #kSubModeJitTraceBuild  @ under construction?
+    bne     .LOP_NEW_INSTANCE_jitCheck
+#else
+    beq     common_exceptionThrown      @ yes, handle the exception
+#endif
+.LOP_NEW_INSTANCE_end:
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     SET_VREG(r0, r3)                    @ vAA<- r0
     GOTO_OPCODE(ip)                     @ jump to next instruction
+
+#if defined(WITH_JIT)
+    /*
+     * Check to see if we need to stop the trace building early.
+     * r0: new object
+     * r3: vAA
+     */
+.LOP_NEW_INSTANCE_jitCheck:
+    ldr     r1, [r10]                   @ reload resolved class
+    cmp     r1, #0                      @ okay?
+    bne     .LOP_NEW_INSTANCE_end             @ yes, finish
+    mov     r9, r0                      @ preserve new object
+    mov     r10, r3                     @ preserve vAA
+    mov     r0, rSELF
+    mov     r1, rPC
+    bl      dvmJitEndTraceSelect        @ (self, pc)
+    FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    SET_VREG(r9, r10)                   @ vAA<- new object
+    GOTO_OPCODE(ip)                     @ jump to next instruction
+#endif
 
     /*
      * Class initialization required.
@@ -8302,16 +8261,13 @@ dvmAsmSisterStart:
      *  r1 holds BBBB
      */
 .LOP_NEW_INSTANCE_resolve:
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     mov     r2, #0                      @ r2<- false
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveClass             @ r0<- resolved ClassObject ptr
     cmp     r0, #0                      @ got null?
     bne     .LOP_NEW_INSTANCE_resolved        @ no, continue
     b       common_exceptionThrown      @ yes, handle exception
-
-.LstrInstantiationErrorPtr:
-    .word   .LstrInstantiationError
 
 /* continuation for OP_NEW_ARRAY */
 
@@ -8323,7 +8279,7 @@ dvmAsmSisterStart:
      *  r2 holds class ref CCCC
      */
 .LOP_NEW_ARRAY_resolve:
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     mov     r9, r1                      @ r9<- length (save)
     mov     r1, r2                      @ r1<- CCCC
     mov     r2, #0                      @ r2<- false
@@ -8378,8 +8334,8 @@ dvmAsmSisterStart:
     beq     common_exceptionThrown      @ alloc failed, handle exception
 
     FETCH(r1, 2)                        @ r1<- FEDC or CCCC
-    str     r0, [rGLUE, #offGlue_retval]      @ retval.l <- new array
-    str     rINST, [rGLUE, #offGlue_retval+4] @ retval.h <- type
+    str     r0, [rSELF, #offThread_retval]      @ retval.l <- new array
+    str     rINST, [rSELF, #offThread_retval+4] @ retval.h <- type
     add     r0, r0, #offArrayObject_contents @ r0<- newArray->contents
     subs    r9, r9, #1                  @ length--, check for neg
     FETCH_ADVANCE_INST(3)               @ advance to next instr, load rINST
@@ -8411,9 +8367,9 @@ dvmAsmSisterStart:
     .endif
 
 2:
-    ldr     r0, [rGLUE, #offGlue_retval]     @ r0<- object
-    ldr     r1, [rGLUE, #offGlue_retval+4]   @ r1<- type
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
+    ldr     r0, [rSELF, #offThread_retval]     @ r0<- object
+    ldr     r1, [rSELF, #offThread_retval+4]   @ r1<- type
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
     GET_INST_OPCODE(ip)                      @ ip<- opcode from rINST
     cmp     r1, #'I'                         @ Is int array?
     strneb  r2, [r2, r0, lsr #GC_CARD_SHIFT] @ Mark card based on object head
@@ -8424,17 +8380,17 @@ dvmAsmSisterStart:
      * mode of filled-new-array.
      */
 .LOP_FILLED_NEW_ARRAY_notimpl:
-    ldr     r0, .L_strInternalError
-    ldr     r1, .L_strFilledNewArrayNotImpl
-    bl      dvmThrowException
+    ldr     r0, .L_strFilledNewArrayNotImpl_OP_FILLED_NEW_ARRAY
+    bl      dvmThrowInternalError
     b       common_exceptionThrown
 
-    .if     (!0)                 @ define in one or the other, not both
-.L_strFilledNewArrayNotImpl:
+    /*
+     * Ideally we'd only define this once, but depending on layout we can
+     * exceed the range of the load above.
+     */
+
+.L_strFilledNewArrayNotImpl_OP_FILLED_NEW_ARRAY:
     .word   .LstrFilledNewArrayNotImpl
-.L_strInternalError:
-    .word   .LstrInternalError
-    .endif
 
 /* continuation for OP_FILLED_NEW_ARRAY_RANGE */
 
@@ -8462,8 +8418,8 @@ dvmAsmSisterStart:
     beq     common_exceptionThrown      @ alloc failed, handle exception
 
     FETCH(r1, 2)                        @ r1<- FEDC or CCCC
-    str     r0, [rGLUE, #offGlue_retval]      @ retval.l <- new array
-    str     rINST, [rGLUE, #offGlue_retval+4] @ retval.h <- type
+    str     r0, [rSELF, #offThread_retval]      @ retval.l <- new array
+    str     rINST, [rSELF, #offThread_retval+4] @ retval.h <- type
     add     r0, r0, #offArrayObject_contents @ r0<- newArray->contents
     subs    r9, r9, #1                  @ length--, check for neg
     FETCH_ADVANCE_INST(3)               @ advance to next instr, load rINST
@@ -8495,9 +8451,9 @@ dvmAsmSisterStart:
     .endif
 
 2:
-    ldr     r0, [rGLUE, #offGlue_retval]     @ r0<- object
-    ldr     r1, [rGLUE, #offGlue_retval+4]   @ r1<- type
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
+    ldr     r0, [rSELF, #offThread_retval]     @ r0<- object
+    ldr     r1, [rSELF, #offThread_retval+4]   @ r1<- type
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
     GET_INST_OPCODE(ip)                      @ ip<- opcode from rINST
     cmp     r1, #'I'                         @ Is int array?
     strneb  r2, [r2, r0, lsr #GC_CARD_SHIFT] @ Mark card based on object head
@@ -8508,17 +8464,17 @@ dvmAsmSisterStart:
      * mode of filled-new-array.
      */
 .LOP_FILLED_NEW_ARRAY_RANGE_notimpl:
-    ldr     r0, .L_strInternalError
-    ldr     r1, .L_strFilledNewArrayNotImpl
-    bl      dvmThrowException
+    ldr     r0, .L_strFilledNewArrayNotImpl_OP_FILLED_NEW_ARRAY_RANGE
+    bl      dvmThrowInternalError
     b       common_exceptionThrown
 
-    .if     (!1)                 @ define in one or the other, not both
-.L_strFilledNewArrayNotImpl:
+    /*
+     * Ideally we'd only define this once, but depending on layout we can
+     * exceed the range of the load above.
+     */
+
+.L_strFilledNewArrayNotImpl_OP_FILLED_NEW_ARRAY_RANGE:
     .word   .LstrFilledNewArrayNotImpl
-.L_strInternalError:
-    .word   .LstrInternalError
-    .endif
 
 /* continuation for OP_CMPL_FLOAT */
 
@@ -8730,10 +8686,10 @@ OP_CMPG_FLOAT_nan:
     ldr     r1, [rINST, #offObject_clazz]  @ r1<- arrayObj->clazz
     bl      dvmCanPutArrayElement       @ test object type vs. array type
     cmp     r0, #0                      @ okay?
-    beq     common_errArrayStore        @ no
+    beq     .LOP_APUT_OBJECT_throw           @ no
     mov     r1, rINST                   @ r1<- arrayObj
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
-    ldr     r2, [rGLUE, #offGlue_cardTable]     @ get biased CT base
+    ldr     r2, [rSELF, #offThread_cardTable]     @ get biased CT base
     add     r10, #offArrayObject_contents   @ r0<- pointer to slot
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     str     r9, [r10]                   @ vBB[vCC]<- vAA
@@ -8744,6 +8700,13 @@ OP_CMPG_FLOAT_nan:
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     str     r9, [r10, #offArrayObject_contents] @ vBB[vCC]<- vAA
     GOTO_OPCODE(ip)                     @ jump to next instruction
+.LOP_APUT_OBJECT_throw:
+    @ The types don't match.  We need to throw an ArrayStoreException.
+    ldr     r0, [r9, #offObject_clazz]
+    ldr     r1, [rINST, #offObject_clazz]
+    EXPORT_PC()
+    bl      dvmThrowArrayStoreExceptionIncompatibleElement
+    b       common_exceptionThrown
 
 /* continuation for OP_IGET */
 
@@ -8913,8 +8876,9 @@ OP_CMPG_FLOAT_nan:
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                         @ releasing store
     str  r0, [r9, r3]                @ obj.field (8/16/32 bits)<- r0
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* continuation for OP_IPUT_WIDE */
@@ -8936,7 +8900,7 @@ OP_CMPG_FLOAT_nan:
     GET_INST_OPCODE(r10)                @ extract opcode from rINST
     .if     0
     add     r2, r9, r3                  @ r2<- target address
-    bl      dvmQuasiAtomicSwap64        @ stores r0/r1 into addr r2
+    bl      dvmQuasiAtomicSwap64Sync    @ stores r0/r1 into addr r2
     .else
     strd    r0, [r9, r3]                @ obj.field (64 bits, aligned)<- r0/r1
     .endif
@@ -8956,12 +8920,13 @@ OP_CMPG_FLOAT_nan:
     and     r1, r1, #15                 @ r1<- A
     cmp     r9, #0                      @ check object for null
     GET_VREG(r0, r1)                    @ r0<- fp[A]
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                         @ releasing store
     str     r0, [r9, r3]                @ obj.field (32 bits)<- r0
+    @ no-op 
     cmp     r0, #0                      @ stored a null reference?
     strneb  r2, [r2, r9, lsr #GC_CARD_SHIFT]  @ mark card if not
     GOTO_OPCODE(ip)                     @ jump to next instruction
@@ -8983,8 +8948,9 @@ OP_CMPG_FLOAT_nan:
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                         @ releasing store
     str  r0, [r9, r3]                @ obj.field (8/16/32 bits)<- r0
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* continuation for OP_IPUT_BYTE */
@@ -9004,8 +8970,9 @@ OP_CMPG_FLOAT_nan:
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                         @ releasing store
     str  r0, [r9, r3]                @ obj.field (8/16/32 bits)<- r0
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* continuation for OP_IPUT_CHAR */
@@ -9025,8 +8992,9 @@ OP_CMPG_FLOAT_nan:
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                         @ releasing store
     str  r0, [r9, r3]                @ obj.field (8/16/32 bits)<- r0
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* continuation for OP_IPUT_SHORT */
@@ -9046,224 +9014,388 @@ OP_CMPG_FLOAT_nan:
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+    @ no-op                         @ releasing store
     str  r0, [r9, r3]                @ obj.field (8/16/32 bits)<- r0
+    @ no-op 
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* continuation for OP_SGET */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_finish
 
 /* continuation for OP_SGET_WIDE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      *
      * Returns StaticField pointer in r0.
      */
 .LOP_SGET_WIDE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r1<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_WIDE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_WIDE_finish          @ resume
 
 /* continuation for OP_SGET_OBJECT */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_OBJECT_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_OBJECT_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_OBJECT_finish
 
 /* continuation for OP_SGET_BOOLEAN */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_BOOLEAN_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_BOOLEAN_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_BOOLEAN_finish
 
 /* continuation for OP_SGET_BYTE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_BYTE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_BYTE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_BYTE_finish
 
 /* continuation for OP_SGET_CHAR */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_CHAR_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_CHAR_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_CHAR_finish
 
 /* continuation for OP_SGET_SHORT */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_SHORT_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_SHORT_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_SHORT_finish
 
 /* continuation for OP_SPUT */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SPUT_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_finish          @ resume
 
 /* continuation for OP_SPUT_WIDE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
-     *  r9: &fp[AA]
+     *  r1:  BBBB field ref
+     *  r9:  &fp[AA]
+     *  r10: dvmDex->pResFields
      *
      * Returns StaticField pointer in r2.
      */
 .LOP_SPUT_WIDE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
     mov     r2, r0                      @ copy to r2
-    bne     .LOP_SPUT_WIDE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_WIDE_finish          @ resume
 
 /* continuation for OP_SPUT_OBJECT */
-.LOP_SPUT_OBJECT_finish:   @ field ptr in r0
-    mov     r2, rINST, lsr #8           @ r2<- AA
-    FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
-    GET_VREG(r1, r2)                    @ r1<- fp[AA]
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
-    ldr     r9, [r0, #offField_clazz]   @ r9<- field->clazz
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    @ no-op                             @ releasing store
+
+
+.LOP_SPUT_OBJECT_end:
     str     r1, [r0, #offStaticField_value]  @ field<- vAA
+    @ no-op 
     cmp     r1, #0                      @ stored a null object?
     strneb  r2, [r2, r9, lsr #GC_CARD_SHIFT]  @ mark card based on obj head
     GOTO_OPCODE(ip)                     @ jump to next instruction
+
+    /* Continuation if the field has not yet been resolved.
+     * r1:  BBBB field ref
+     * r10: dvmDex->pResFields
+     */
+.LOP_SPUT_OBJECT_resolve:
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
+    EXPORT_PC()                         @ resolve() could throw, so export now
+    ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
+    bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
+    cmp     r0, #0                      @ success?
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_OBJECT_finish          @ resume
+
 
 /* continuation for OP_SPUT_BOOLEAN */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SPUT_BOOLEAN_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_BOOLEAN_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_BOOLEAN_finish          @ resume
 
 /* continuation for OP_SPUT_BYTE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SPUT_BYTE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_BYTE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_BYTE_finish          @ resume
 
 /* continuation for OP_SPUT_CHAR */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SPUT_CHAR_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_CHAR_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_CHAR_finish          @ resume
 
 /* continuation for OP_SPUT_SHORT */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SPUT_SHORT_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_SHORT_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_SHORT_finish          @ resume
 
 /* continuation for OP_INVOKE_VIRTUAL */
 
@@ -9273,24 +9405,24 @@ OP_CMPG_FLOAT_nan:
      *  r10 = C or CCCC (index of first arg, which is the "this" ptr)
      */
 .LOP_INVOKE_VIRTUAL_continue:
-    GET_VREG(r1, r10)                   @ r1<- "this" ptr
+    GET_VREG(r9, r10)                   @ r9<- "this" ptr
     ldrh    r2, [r0, #offMethod_methodIndex]    @ r2<- baseMethod->methodIndex
-    cmp     r1, #0                      @ is "this" null?
+    cmp     r9, #0                      @ is "this" null?
     beq     common_errNullObject        @ null "this", throw exception
-    ldr     r3, [r1, #offObject_clazz]  @ r1<- thisPtr->clazz
+    ldr     r3, [r9, #offObject_clazz]  @ r3<- thisPtr->clazz
     ldr     r3, [r3, #offClassObject_vtable]    @ r3<- thisPtr->clazz->vtable
     ldr     r0, [r3, r2, lsl #2]        @ r3<- vtable[methodIndex]
-    bl      common_invokeMethodNoRange @ continue on
+    bl      common_invokeMethodNoRange @ (r0=method, r9="this")
 
 /* continuation for OP_INVOKE_SUPER */
 
     /*
      * At this point:
      *  r0 = resolved base method
-     *  r9 = method->clazz
+     *  r10 = method->clazz
      */
 .LOP_INVOKE_SUPER_continue:
-    ldr     r1, [r9, #offClassObject_super]     @ r1<- method->clazz->super
+    ldr     r1, [r10, #offClassObject_super]    @ r1<- method->clazz->super
     ldrh    r2, [r0, #offMethod_methodIndex]    @ r2<- baseMethod->methodIndex
     ldr     r3, [r1, #offClassObject_vtableCount]   @ r3<- super->vtableCount
     EXPORT_PC()                         @ must export for invoke
@@ -9301,7 +9433,7 @@ OP_CMPG_FLOAT_nan:
     bl      common_invokeMethodNoRange @ continue on
 
 .LOP_INVOKE_SUPER_resolve:
-    mov     r0, r9                      @ r0<- method->clazz
+    mov     r0, r10                     @ r0<- method->clazz
     mov     r2, #METHOD_VIRTUAL         @ resolver method type
     bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
     cmp     r0, #0                      @ got null?
@@ -9324,14 +9456,46 @@ OP_CMPG_FLOAT_nan:
      *  r10 = "this" register
      */
 .LOP_INVOKE_DIRECT_resolve:
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     mov     r2, #METHOD_DIRECT          @ resolver method type
     bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
     cmp     r0, #0                      @ got null?
-    GET_VREG(r2, r10)                   @ r2<- "this" ptr (reload)
     bne     .LOP_INVOKE_DIRECT_finish          @ no, continue
     b       common_exceptionThrown      @ yes, handle exception
+
+/* continuation for OP_INVOKE_STATIC */
+
+
+.LOP_INVOKE_STATIC_resolve:
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
+    ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
+    mov     r2, #METHOD_STATIC          @ resolver method type
+    bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
+    cmp     r0, #0                      @ got null?
+#if defined(WITH_JIT)
+    /*
+     * Check to see if we're actively building a trace.  If so,
+     * we need to keep this instruction out of it.
+     * r10: &resolved_methodToCall
+     */
+    ldrh    r2, [rSELF, #offThread_subMode]
+    beq     common_exceptionThrown            @ null, handle exception
+    ands    r2, #kSubModeJitTraceBuild        @ trace under construction?
+    beq     common_invokeMethodNoRange     @ no (r0=method, r9="this")
+    ldr     r1, [r10]                         @ reload resolved method
+    cmp     r1, #0                            @ finished resolving?
+    bne     common_invokeMethodNoRange     @ yes (r0=method, r9="this")
+    mov     r10, r0                           @ preserve method
+    mov     r0, rSELF
+    mov     r1, rPC
+    bl      dvmJitEndTraceSelect              @ (self, pc)
+    mov     r0, r10
+    b       common_invokeMethodNoRange     @ whew, finally!
+#else
+    bne     common_invokeMethodNoRange     @ (r0=method, r9="this")
+    b       common_exceptionThrown            @ yes, handle exception
+#endif
 
 /* continuation for OP_INVOKE_VIRTUAL_RANGE */
 
@@ -9341,24 +9505,24 @@ OP_CMPG_FLOAT_nan:
      *  r10 = C or CCCC (index of first arg, which is the "this" ptr)
      */
 .LOP_INVOKE_VIRTUAL_RANGE_continue:
-    GET_VREG(r1, r10)                   @ r1<- "this" ptr
+    GET_VREG(r9, r10)                   @ r9<- "this" ptr
     ldrh    r2, [r0, #offMethod_methodIndex]    @ r2<- baseMethod->methodIndex
-    cmp     r1, #0                      @ is "this" null?
+    cmp     r9, #0                      @ is "this" null?
     beq     common_errNullObject        @ null "this", throw exception
-    ldr     r3, [r1, #offObject_clazz]  @ r1<- thisPtr->clazz
+    ldr     r3, [r9, #offObject_clazz]  @ r3<- thisPtr->clazz
     ldr     r3, [r3, #offClassObject_vtable]    @ r3<- thisPtr->clazz->vtable
     ldr     r0, [r3, r2, lsl #2]        @ r3<- vtable[methodIndex]
-    bl      common_invokeMethodRange @ continue on
+    bl      common_invokeMethodRange @ (r0=method, r9="this")
 
 /* continuation for OP_INVOKE_SUPER_RANGE */
 
     /*
      * At this point:
      *  r0 = resolved base method
-     *  r9 = method->clazz
+     *  r10 = method->clazz
      */
 .LOP_INVOKE_SUPER_RANGE_continue:
-    ldr     r1, [r9, #offClassObject_super]     @ r1<- method->clazz->super
+    ldr     r1, [r10, #offClassObject_super]    @ r1<- method->clazz->super
     ldrh    r2, [r0, #offMethod_methodIndex]    @ r2<- baseMethod->methodIndex
     ldr     r3, [r1, #offClassObject_vtableCount]   @ r3<- super->vtableCount
     EXPORT_PC()                         @ must export for invoke
@@ -9369,7 +9533,7 @@ OP_CMPG_FLOAT_nan:
     bl      common_invokeMethodRange @ continue on
 
 .LOP_INVOKE_SUPER_RANGE_resolve:
-    mov     r0, r9                      @ r0<- method->clazz
+    mov     r0, r10                     @ r0<- method->clazz
     mov     r2, #METHOD_VIRTUAL         @ resolver method type
     bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
     cmp     r0, #0                      @ got null?
@@ -9392,14 +9556,46 @@ OP_CMPG_FLOAT_nan:
      *  r10 = "this" register
      */
 .LOP_INVOKE_DIRECT_RANGE_resolve:
-    ldr     r3, [rGLUE, #offGlue_method] @ r3<- glue->method
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
     ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
     mov     r2, #METHOD_DIRECT          @ resolver method type
     bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
     cmp     r0, #0                      @ got null?
-    GET_VREG(r2, r10)                   @ r2<- "this" ptr (reload)
     bne     .LOP_INVOKE_DIRECT_RANGE_finish          @ no, continue
     b       common_exceptionThrown      @ yes, handle exception
+
+/* continuation for OP_INVOKE_STATIC_RANGE */
+
+
+.LOP_INVOKE_STATIC_RANGE_resolve:
+    ldr     r3, [rSELF, #offThread_method] @ r3<- self->method
+    ldr     r0, [r3, #offMethod_clazz]  @ r0<- method->clazz
+    mov     r2, #METHOD_STATIC          @ resolver method type
+    bl      dvmResolveMethod            @ r0<- call(clazz, ref, flags)
+    cmp     r0, #0                      @ got null?
+#if defined(WITH_JIT)
+    /*
+     * Check to see if we're actively building a trace.  If so,
+     * we need to keep this instruction out of it.
+     * r10: &resolved_methodToCall
+     */
+    ldrh    r2, [rSELF, #offThread_subMode]
+    beq     common_exceptionThrown            @ null, handle exception
+    ands    r2, #kSubModeJitTraceBuild        @ trace under construction?
+    beq     common_invokeMethodRange     @ no (r0=method, r9="this")
+    ldr     r1, [r10]                         @ reload resolved method
+    cmp     r1, #0                            @ finished resolving?
+    bne     common_invokeMethodRange     @ yes (r0=method, r9="this")
+    mov     r10, r0                           @ preserve method
+    mov     r0, rSELF
+    mov     r1, rPC
+    bl      dvmJitEndTraceSelect              @ (self, pc)
+    mov     r0, r10
+    b       common_invokeMethodRange     @ whew, finally!
+#else
+    bne     common_invokeMethodRange     @ (r0=method, r9="this")
+    b       common_exceptionThrown            @ yes, handle exception
+#endif
 
 /* continuation for OP_FLOAT_TO_LONG */
 /*
@@ -9578,39 +9774,62 @@ d2l_doconv:
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    SMP_DMB                            @ releasing store
+    SMP_DMB_ST                        @ releasing store
     str  r0, [r9, r3]                @ obj.field (8/16/32 bits)<- r0
+    SMP_DMB
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /* continuation for OP_SGET_VOLATILE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_VOLATILE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_VOLATILE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_VOLATILE_finish
 
 /* continuation for OP_SPUT_VOLATILE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SPUT_VOLATILE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SPUT_VOLATILE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_VOLATILE_finish          @ resume
 
 /* continuation for OP_IGET_OBJECT_VOLATILE */
 
@@ -9677,7 +9896,7 @@ d2l_doconv:
     GET_INST_OPCODE(r10)                @ extract opcode from rINST
     .if     1
     add     r2, r9, r3                  @ r2<- target address
-    bl      dvmQuasiAtomicSwap64        @ stores r0/r1 into addr r2
+    bl      dvmQuasiAtomicSwap64Sync    @ stores r0/r1 into addr r2
     .else
     strd    r0, [r9, r3]                @ obj.field (64 bits, aligned)<- r0/r1
     .endif
@@ -9687,37 +9906,59 @@ d2l_doconv:
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      *
      * Returns StaticField pointer in r0.
      */
 .LOP_SGET_WIDE_VOLATILE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r1<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_WIDE_VOLATILE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_WIDE_VOLATILE_finish          @ resume
 
 /* continuation for OP_SPUT_WIDE_VOLATILE */
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
-     *  r9: &fp[AA]
+     *  r1:  BBBB field ref
+     *  r9:  &fp[AA]
+     *  r10: dvmDex->pResFields
      *
      * Returns StaticField pointer in r2.
      */
 .LOP_SPUT_WIDE_VOLATILE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
     mov     r2, r0                      @ copy to r2
-    bne     .LOP_SPUT_WIDE_VOLATILE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_WIDE_VOLATILE_finish          @ resume
 
 /* continuation for OP_EXECUTE_INLINE */
 
@@ -9735,21 +9976,52 @@ d2l_doconv:
      */
 .LOP_EXECUTE_INLINE_continue:
     rsb     r0, r0, #4                  @ r0<- 4-r0
-    FETCH(r9, 2)                        @ r9<- FEDC
+    FETCH(rINST, 2)                     @ rINST<- FEDC
     add     pc, pc, r0, lsl #3          @ computed goto, 2 instrs each
     bl      common_abort                @ (skipped due to ARM prefetch)
-4:  and     ip, r9, #0xf000             @ isolate F
+4:  and     ip, rINST, #0xf000          @ isolate F
     ldr     r3, [rFP, ip, lsr #10]      @ r3<- vF (shift right 12, left 2)
-3:  and     ip, r9, #0x0f00             @ isolate E
+3:  and     ip, rINST, #0x0f00          @ isolate E
     ldr     r2, [rFP, ip, lsr #6]       @ r2<- vE
-2:  and     ip, r9, #0x00f0             @ isolate D
+2:  and     ip, rINST, #0x00f0          @ isolate D
     ldr     r1, [rFP, ip, lsr #2]       @ r1<- vD
-1:  and     ip, r9, #0x000f             @ isolate C
+1:  and     ip, rINST, #0x000f          @ isolate C
     ldr     r0, [rFP, ip, lsl #2]       @ r0<- vC
 0:
-    ldr     r9, .LOP_EXECUTE_INLINE_table       @ table of InlineOperation
-    LDR_PC  "[r9, r10, lsl #4]"         @ sizeof=16, "func" is first entry
+    ldr     rINST, .LOP_EXECUTE_INLINE_table    @ table of InlineOperation
+    ldr     pc, [rINST, r10, lsl #4]    @ sizeof=16, "func" is first entry
     @ (not reached)
+
+    /*
+     * We're debugging or profiling.
+     * r10: opIndex
+     */
+.LOP_EXECUTE_INLINE_debugmode:
+    mov     r0, r10
+    bl      dvmResolveInlineNative
+    cmp     r0, #0                      @ did it resolve?
+    beq     .LOP_EXECUTE_INLINE_resume          @ no, just move on
+    mov     r9, r0                      @ remember method
+    mov     r1, rSELF
+    bl      dvmFastMethodTraceEnter     @ (method, self)
+    add     r1, rSELF, #offThread_retval@ r1<- &self->retval
+    sub     sp, sp, #8                  @ make room for arg, +64 bit align
+    mov     r0, rINST, lsr #12          @ r0<- B
+    str     r1, [sp]                    @ push &self->retval
+    bl      .LOP_EXECUTE_INLINE_continue        @ make call; will return after
+    mov     rINST, r0                   @ save result of inline
+    add     sp, sp, #8                  @ pop stack
+    mov     r0, r9                      @ r0<- method
+    mov     r1, rSELF
+    bl      dvmFastNativeMethodTraceExit @ (method, self)
+    cmp     rINST, #0                   @ test boolean result of inline
+    beq     common_exceptionThrown      @ returned false, handle exception
+    FETCH_ADVANCE_INST(3)               @ advance rPC, load rINST
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    GOTO_OPCODE(ip)                     @ jump to next instruction
+
+
+
 
 .LOP_EXECUTE_INLINE_table:
     .word   gDvmInlineOpsTable
@@ -9777,11 +10049,67 @@ d2l_doconv:
     GET_VREG(r0, ip)                    @ r0<- vBase[0]
 0:
     ldr     r9, .LOP_EXECUTE_INLINE_RANGE_table       @ table of InlineOperation
-    LDR_PC  "[r9, r10, lsl #4]"         @ sizeof=16, "func" is first entry
+    ldr     pc, [r9, r10, lsl #4]       @ sizeof=16, "func" is first entry
     @ (not reached)
+
+
+    /*
+     * We're debugging or profiling.
+     * r10: opIndex
+     */
+.LOP_EXECUTE_INLINE_RANGE_debugmode:
+    mov     r0, r10
+    bl      dvmResolveInlineNative
+    cmp     r0, #0                      @ did it resolve?
+    beq     .LOP_EXECUTE_INLINE_RANGE_resume          @ no, just move on
+    mov     r9, r0                      @ remember method
+    mov     r1, rSELF
+    bl      dvmFastMethodTraceEnter     @ (method, self)
+    add     r1, rSELF, #offThread_retval@ r1<- &self->retval
+    sub     sp, sp, #8                  @ make room for arg, +64 bit align
+    mov     r0, rINST, lsr #8           @ r0<- B
+    mov     rINST, r9                   @ rINST<- method
+    str     r1, [sp]                    @ push &self->retval
+    bl      .LOP_EXECUTE_INLINE_RANGE_continue        @ make call; will return after
+    mov     r9, r0                      @ save result of inline
+    add     sp, sp, #8                  @ pop stack
+    mov     r0, rINST                   @ r0<- method
+    mov     r1, rSELF
+    bl      dvmFastNativeMethodTraceExit  @ (method, self)
+    cmp     r9, #0                      @ test boolean result of inline
+    beq     common_exceptionThrown      @ returned false, handle exception
+    FETCH_ADVANCE_INST(3)               @ advance rPC, load rINST
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    GOTO_OPCODE(ip)                     @ jump to next instruction
+
+
+
 
 .LOP_EXECUTE_INLINE_RANGE_table:
     .word   gDvmInlineOpsTable
+
+
+/* continuation for OP_INVOKE_OBJECT_INIT_RANGE */
+
+.LOP_INVOKE_OBJECT_INIT_RANGE_setFinal:
+    EXPORT_PC()                         @ can throw
+    bl      dvmSetFinalizable           @ call dvmSetFinalizable(obj)
+    ldr     r0, [rSELF, #offThread_exception] @ r0<- self->exception
+    cmp     r0, #0                      @ exception pending?
+    bne     common_exceptionThrown      @ yes, handle it
+    b       .LOP_INVOKE_OBJECT_INIT_RANGE_finish
+
+    /*
+     * A debugger is attached, so we need to go ahead and do
+     * this.  For simplicity, we'll just jump directly to the
+     * corresponding handler.  Note that we can't use
+     * rIBASE here because it may be in single-step mode.
+     * Load the primary table base directly.
+     */
+.LOP_INVOKE_OBJECT_INIT_RANGE_debugger:
+    ldr     r1, [rSELF, #offThread_mainHandlerTable]
+    mov     ip, #OP_INVOKE_DIRECT_RANGE
+    GOTO_OPCODE_BASE(r1,ip)             @ execute it
 
 /* continuation for OP_IPUT_OBJECT_VOLATILE */
 
@@ -9797,12 +10125,13 @@ d2l_doconv:
     and     r1, r1, #15                 @ r1<- A
     cmp     r9, #0                      @ check object for null
     GET_VREG(r0, r1)                    @ r0<- fp[A]
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
+    ldr     r2, [rSELF, #offThread_cardTable]  @ r2<- card table base
     beq     common_errNullObject        @ object was null
     FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    SMP_DMB                            @ releasing store
+    SMP_DMB_ST                        @ releasing store
     str     r0, [r9, r3]                @ obj.field (32 bits)<- r0
+    SMP_DMB
     cmp     r0, #0                      @ stored a null reference?
     strneb  r2, [r2, r9, lsr #GC_CARD_SHIFT]  @ mark card if not
     GOTO_OPCODE(ip)                     @ jump to next instruction
@@ -9811,119 +10140,6074 @@ d2l_doconv:
 
     /*
      * Continuation if the field has not yet been resolved.
-     *  r1: BBBB field ref
+     *  r1:  BBBB field ref
+     *  r10: dvmDex->pResFields
      */
 .LOP_SGET_OBJECT_VOLATILE_resolve:
-    ldr     r2, [rGLUE, #offGlue_method]    @ r2<- current method
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
     EXPORT_PC()                         @ resolve() could throw, so export now
     ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
     bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
     cmp     r0, #0                      @ success?
-    bne     .LOP_SGET_OBJECT_VOLATILE_finish          @ yes, finish
-    b       common_exceptionThrown      @ no, handle exception
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SGET_OBJECT_VOLATILE_finish
 
 /* continuation for OP_SPUT_OBJECT_VOLATILE */
-.LOP_SPUT_OBJECT_VOLATILE_finish:   @ field ptr in r0
-    mov     r2, rINST, lsr #8           @ r2<- AA
-    FETCH_ADVANCE_INST(2)               @ advance rPC, load rINST
-    GET_VREG(r1, r2)                    @ r1<- fp[AA]
-    ldr     r2, [rGLUE, #offGlue_cardTable]  @ r2<- card table base
-    ldr     r9, [r0, #offField_clazz]   @ r9<- field->clazz
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    SMP_DMB                            @ releasing store
+
+
+.LOP_SPUT_OBJECT_VOLATILE_end:
     str     r1, [r0, #offStaticField_value]  @ field<- vAA
+    SMP_DMB
     cmp     r1, #0                      @ stored a null object?
     strneb  r2, [r2, r9, lsr #GC_CARD_SHIFT]  @ mark card based on obj head
     GOTO_OPCODE(ip)                     @ jump to next instruction
+
+    /* Continuation if the field has not yet been resolved.
+     * r1:  BBBB field ref
+     * r10: dvmDex->pResFields
+     */
+.LOP_SPUT_OBJECT_VOLATILE_resolve:
+    ldr     r2, [rSELF, #offThread_method]    @ r2<- current method
+#if defined(WITH_JIT)
+    add     r10, r10, r1, lsl #2        @ r10<- &dvmDex->pResFields[field]
+#endif
+    EXPORT_PC()                         @ resolve() could throw, so export now
+    ldr     r0, [r2, #offMethod_clazz]  @ r0<- method->clazz
+    bl      dvmResolveStaticField       @ r0<- resolved StaticField ptr
+    cmp     r0, #0                      @ success?
+    beq     common_exceptionThrown      @ no, handle exception
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including this instruction.
+     */
+    bl      common_verifyField
+#endif
+    b       .LOP_SPUT_OBJECT_VOLATILE_finish          @ resume
+
 
     .size   dvmAsmSisterStart, .-dvmAsmSisterStart
     .global dvmAsmSisterEnd
 dvmAsmSisterEnd:
 
-/* File: armv5te/footer.S */
 
+    .global dvmAsmAltInstructionStart
+    .type   dvmAsmAltInstructionStart, %function
+    .text
+
+dvmAsmAltInstructionStart = .L_ALT_OP_NOP
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NOP: /* 0x00 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (0 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE: /* 0x01 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (1 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_FROM16: /* 0x02 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (2 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_16: /* 0x03 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (3 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_WIDE: /* 0x04 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (4 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_WIDE_FROM16: /* 0x05 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (5 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_WIDE_16: /* 0x06 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (6 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_OBJECT: /* 0x07 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (7 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_OBJECT_FROM16: /* 0x08 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (8 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_OBJECT_16: /* 0x09 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (9 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_RESULT: /* 0x0a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (10 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_RESULT_WIDE: /* 0x0b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (11 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_RESULT_OBJECT: /* 0x0c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (12 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MOVE_EXCEPTION: /* 0x0d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (13 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RETURN_VOID: /* 0x0e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (14 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RETURN: /* 0x0f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (15 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RETURN_WIDE: /* 0x10 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (16 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RETURN_OBJECT: /* 0x11 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (17 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_4: /* 0x12 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (18 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_16: /* 0x13 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (19 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST: /* 0x14 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (20 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_HIGH16: /* 0x15 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (21 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_WIDE_16: /* 0x16 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (22 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_WIDE_32: /* 0x17 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (23 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_WIDE: /* 0x18 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (24 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_WIDE_HIGH16: /* 0x19 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (25 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_STRING: /* 0x1a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (26 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_STRING_JUMBO: /* 0x1b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (27 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CONST_CLASS: /* 0x1c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (28 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MONITOR_ENTER: /* 0x1d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (29 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MONITOR_EXIT: /* 0x1e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (30 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CHECK_CAST: /* 0x1f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (31 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INSTANCE_OF: /* 0x20 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (32 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ARRAY_LENGTH: /* 0x21 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (33 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NEW_INSTANCE: /* 0x22 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (34 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NEW_ARRAY: /* 0x23 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (35 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_FILLED_NEW_ARRAY: /* 0x24 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (36 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_FILLED_NEW_ARRAY_RANGE: /* 0x25 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (37 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_FILL_ARRAY_DATA: /* 0x26 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (38 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_THROW: /* 0x27 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (39 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_GOTO: /* 0x28 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (40 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_GOTO_16: /* 0x29 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (41 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_GOTO_32: /* 0x2a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (42 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_PACKED_SWITCH: /* 0x2b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (43 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPARSE_SWITCH: /* 0x2c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (44 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CMPL_FLOAT: /* 0x2d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (45 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CMPG_FLOAT: /* 0x2e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (46 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CMPL_DOUBLE: /* 0x2f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (47 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CMPG_DOUBLE: /* 0x30 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (48 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_CMP_LONG: /* 0x31 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (49 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_EQ: /* 0x32 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (50 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_NE: /* 0x33 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (51 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_LT: /* 0x34 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (52 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_GE: /* 0x35 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (53 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_GT: /* 0x36 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (54 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_LE: /* 0x37 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (55 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_EQZ: /* 0x38 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (56 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_NEZ: /* 0x39 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (57 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_LTZ: /* 0x3a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (58 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_GEZ: /* 0x3b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (59 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_GTZ: /* 0x3c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (60 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IF_LEZ: /* 0x3d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (61 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_3E: /* 0x3e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (62 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_3F: /* 0x3f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (63 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_40: /* 0x40 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (64 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_41: /* 0x41 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (65 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_42: /* 0x42 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (66 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_43: /* 0x43 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (67 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET: /* 0x44 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (68 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET_WIDE: /* 0x45 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (69 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET_OBJECT: /* 0x46 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (70 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET_BOOLEAN: /* 0x47 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (71 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET_BYTE: /* 0x48 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (72 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET_CHAR: /* 0x49 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (73 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AGET_SHORT: /* 0x4a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (74 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT: /* 0x4b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (75 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT_WIDE: /* 0x4c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (76 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT_OBJECT: /* 0x4d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (77 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT_BOOLEAN: /* 0x4e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (78 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT_BYTE: /* 0x4f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (79 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT_CHAR: /* 0x50 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (80 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_APUT_SHORT: /* 0x51 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (81 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET: /* 0x52 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (82 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_WIDE: /* 0x53 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (83 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_OBJECT: /* 0x54 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (84 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_BOOLEAN: /* 0x55 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (85 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_BYTE: /* 0x56 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (86 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_CHAR: /* 0x57 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (87 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_SHORT: /* 0x58 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (88 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT: /* 0x59 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (89 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_WIDE: /* 0x5a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (90 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_OBJECT: /* 0x5b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (91 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_BOOLEAN: /* 0x5c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (92 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_BYTE: /* 0x5d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (93 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_CHAR: /* 0x5e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (94 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_SHORT: /* 0x5f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (95 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET: /* 0x60 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (96 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_WIDE: /* 0x61 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (97 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_OBJECT: /* 0x62 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (98 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_BOOLEAN: /* 0x63 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (99 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_BYTE: /* 0x64 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (100 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_CHAR: /* 0x65 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (101 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_SHORT: /* 0x66 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (102 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT: /* 0x67 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (103 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_WIDE: /* 0x68 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (104 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_OBJECT: /* 0x69 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (105 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_BOOLEAN: /* 0x6a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (106 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_BYTE: /* 0x6b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (107 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_CHAR: /* 0x6c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (108 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_SHORT: /* 0x6d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (109 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_VIRTUAL: /* 0x6e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (110 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_SUPER: /* 0x6f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (111 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_DIRECT: /* 0x70 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (112 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_STATIC: /* 0x71 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (113 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_INTERFACE: /* 0x72 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (114 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_73: /* 0x73 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (115 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_VIRTUAL_RANGE: /* 0x74 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (116 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_SUPER_RANGE: /* 0x75 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (117 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_DIRECT_RANGE: /* 0x76 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (118 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_STATIC_RANGE: /* 0x77 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (119 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_INTERFACE_RANGE: /* 0x78 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (120 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_79: /* 0x79 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (121 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_7A: /* 0x7a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (122 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NEG_INT: /* 0x7b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (123 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NOT_INT: /* 0x7c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (124 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NEG_LONG: /* 0x7d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (125 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NOT_LONG: /* 0x7e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (126 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NEG_FLOAT: /* 0x7f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (127 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_NEG_DOUBLE: /* 0x80 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (128 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INT_TO_LONG: /* 0x81 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (129 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INT_TO_FLOAT: /* 0x82 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (130 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INT_TO_DOUBLE: /* 0x83 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (131 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_LONG_TO_INT: /* 0x84 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (132 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_LONG_TO_FLOAT: /* 0x85 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (133 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_LONG_TO_DOUBLE: /* 0x86 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (134 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_FLOAT_TO_INT: /* 0x87 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (135 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_FLOAT_TO_LONG: /* 0x88 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (136 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_FLOAT_TO_DOUBLE: /* 0x89 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (137 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DOUBLE_TO_INT: /* 0x8a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (138 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DOUBLE_TO_LONG: /* 0x8b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (139 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DOUBLE_TO_FLOAT: /* 0x8c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (140 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INT_TO_BYTE: /* 0x8d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (141 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INT_TO_CHAR: /* 0x8e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (142 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INT_TO_SHORT: /* 0x8f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (143 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_INT: /* 0x90 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (144 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_INT: /* 0x91 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (145 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_INT: /* 0x92 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (146 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_INT: /* 0x93 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (147 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_INT: /* 0x94 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (148 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AND_INT: /* 0x95 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (149 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_OR_INT: /* 0x96 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (150 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_XOR_INT: /* 0x97 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (151 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHL_INT: /* 0x98 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (152 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHR_INT: /* 0x99 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (153 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_USHR_INT: /* 0x9a */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (154 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_LONG: /* 0x9b */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (155 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_LONG: /* 0x9c */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (156 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_LONG: /* 0x9d */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (157 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_LONG: /* 0x9e */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (158 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_LONG: /* 0x9f */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (159 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AND_LONG: /* 0xa0 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (160 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_OR_LONG: /* 0xa1 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (161 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_XOR_LONG: /* 0xa2 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (162 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHL_LONG: /* 0xa3 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (163 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHR_LONG: /* 0xa4 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (164 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_USHR_LONG: /* 0xa5 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (165 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_FLOAT: /* 0xa6 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (166 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_FLOAT: /* 0xa7 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (167 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_FLOAT: /* 0xa8 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (168 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_FLOAT: /* 0xa9 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (169 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_FLOAT: /* 0xaa */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (170 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_DOUBLE: /* 0xab */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (171 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_DOUBLE: /* 0xac */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (172 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_DOUBLE: /* 0xad */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (173 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_DOUBLE: /* 0xae */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (174 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_DOUBLE: /* 0xaf */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (175 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_INT_2ADDR: /* 0xb0 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (176 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_INT_2ADDR: /* 0xb1 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (177 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_INT_2ADDR: /* 0xb2 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (178 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_INT_2ADDR: /* 0xb3 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (179 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_INT_2ADDR: /* 0xb4 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (180 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AND_INT_2ADDR: /* 0xb5 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (181 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_OR_INT_2ADDR: /* 0xb6 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (182 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_XOR_INT_2ADDR: /* 0xb7 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (183 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHL_INT_2ADDR: /* 0xb8 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (184 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHR_INT_2ADDR: /* 0xb9 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (185 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_USHR_INT_2ADDR: /* 0xba */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (186 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_LONG_2ADDR: /* 0xbb */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (187 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_LONG_2ADDR: /* 0xbc */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (188 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_LONG_2ADDR: /* 0xbd */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (189 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_LONG_2ADDR: /* 0xbe */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (190 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_LONG_2ADDR: /* 0xbf */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (191 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AND_LONG_2ADDR: /* 0xc0 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (192 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_OR_LONG_2ADDR: /* 0xc1 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (193 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_XOR_LONG_2ADDR: /* 0xc2 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (194 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHL_LONG_2ADDR: /* 0xc3 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (195 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHR_LONG_2ADDR: /* 0xc4 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (196 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_USHR_LONG_2ADDR: /* 0xc5 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (197 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_FLOAT_2ADDR: /* 0xc6 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (198 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_FLOAT_2ADDR: /* 0xc7 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (199 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_FLOAT_2ADDR: /* 0xc8 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (200 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_FLOAT_2ADDR: /* 0xc9 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (201 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_FLOAT_2ADDR: /* 0xca */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (202 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_DOUBLE_2ADDR: /* 0xcb */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (203 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SUB_DOUBLE_2ADDR: /* 0xcc */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (204 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_DOUBLE_2ADDR: /* 0xcd */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (205 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_DOUBLE_2ADDR: /* 0xce */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (206 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_DOUBLE_2ADDR: /* 0xcf */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (207 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_INT_LIT16: /* 0xd0 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (208 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RSUB_INT: /* 0xd1 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (209 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_INT_LIT16: /* 0xd2 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (210 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_INT_LIT16: /* 0xd3 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (211 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_INT_LIT16: /* 0xd4 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (212 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AND_INT_LIT16: /* 0xd5 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (213 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_OR_INT_LIT16: /* 0xd6 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (214 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_XOR_INT_LIT16: /* 0xd7 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (215 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_ADD_INT_LIT8: /* 0xd8 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (216 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RSUB_INT_LIT8: /* 0xd9 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (217 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_MUL_INT_LIT8: /* 0xda */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (218 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_DIV_INT_LIT8: /* 0xdb */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (219 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_REM_INT_LIT8: /* 0xdc */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (220 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_AND_INT_LIT8: /* 0xdd */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (221 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_OR_INT_LIT8: /* 0xde */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (222 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_XOR_INT_LIT8: /* 0xdf */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (223 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHL_INT_LIT8: /* 0xe0 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (224 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SHR_INT_LIT8: /* 0xe1 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (225 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_USHR_INT_LIT8: /* 0xe2 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (226 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_VOLATILE: /* 0xe3 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (227 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_VOLATILE: /* 0xe4 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (228 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_VOLATILE: /* 0xe5 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (229 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_VOLATILE: /* 0xe6 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (230 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_OBJECT_VOLATILE: /* 0xe7 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (231 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_WIDE_VOLATILE: /* 0xe8 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (232 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_WIDE_VOLATILE: /* 0xe9 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (233 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_WIDE_VOLATILE: /* 0xea */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (234 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_WIDE_VOLATILE: /* 0xeb */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (235 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_BREAKPOINT: /* 0xec */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (236 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_THROW_VERIFICATION_ERROR: /* 0xed */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (237 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_EXECUTE_INLINE: /* 0xee */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (238 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_EXECUTE_INLINE_RANGE: /* 0xef */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (239 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_OBJECT_INIT_RANGE: /* 0xf0 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (240 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_RETURN_VOID_BARRIER: /* 0xf1 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (241 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_QUICK: /* 0xf2 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (242 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_WIDE_QUICK: /* 0xf3 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (243 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IGET_OBJECT_QUICK: /* 0xf4 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (244 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_QUICK: /* 0xf5 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (245 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_WIDE_QUICK: /* 0xf6 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (246 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_OBJECT_QUICK: /* 0xf7 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (247 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_VIRTUAL_QUICK: /* 0xf8 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (248 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_VIRTUAL_QUICK_RANGE: /* 0xf9 */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (249 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_SUPER_QUICK: /* 0xfa */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (250 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_INVOKE_SUPER_QUICK_RANGE: /* 0xfb */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (251 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_IPUT_OBJECT_VOLATILE: /* 0xfc */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (252 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SGET_OBJECT_VOLATILE: /* 0xfd */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (253 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_SPUT_OBJECT_VOLATILE: /* 0xfe */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (254 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+/* ------------------------------ */
+    .balign 64
+.L_ALT_OP_UNUSED_FF: /* 0xff */
+/* File: armv5te/alt_stub.S */
+/*
+ * Inter-instruction transfer stub.  Call out to dvmCheckBefore to handle
+ * any interesting requests and then jump to the real instruction
+ * handler.    Note that the call to dvmCheckBefore is done as a tail call.
+ * rIBASE updates won't be seen until a refresh, and we can tell we have a
+ * stale rIBASE if breakFlags==0.  Always refresh rIBASE here, and then
+ * bail to the real handler if breakFlags==0.
+ */
+    ldrb   r3, [rSELF, #offThread_breakFlags]
+    adrl   lr, dvmAsmInstructionStart + (255 * 64)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    cmp    r3, #0
+    bxeq   lr                   @ nothing to do - jump to real handler
+    EXPORT_PC()
+    mov    r0, rPC              @ arg0
+    mov    r1, rFP              @ arg1
+    mov    r2, rSELF            @ arg2
+    b      dvmCheckBefore       @ (dPC,dFP,self) tail call
+
+    .balign 64
+    .size   dvmAsmAltInstructionStart, .-dvmAsmAltInstructionStart
+    .global dvmAsmAltInstructionEnd
+dvmAsmAltInstructionEnd:
+/* File: armv5te/footer.S */
 /*
  * ===========================================================================
  *  Common subroutines and data
  * ===========================================================================
  */
 
-
-
     .text
     .align  2
 
 #if defined(WITH_JIT)
+
 #if defined(WITH_SELF_VERIFICATION)
+/*
+ * "longjmp" to a translation after single-stepping.  Before returning
+ * to translation, must save state for self-verification.
+ */
+    .global dvmJitResumeTranslation              @ (Thread* self, u4* dFP)
+dvmJitResumeTranslation:
+    mov    rSELF, r0                             @ restore self
+    mov    rPC, r1                               @ restore Dalvik pc
+    mov    rFP, r2                               @ restore Dalvik fp
+    ldr    r10, [rSELF,#offThread_jitResumeNPC]  @ resume address
+    mov    r2, #0
+    str    r2, [rSELF,#offThread_jitResumeNPC]   @ reset resume address
+    ldr    sp, [rSELF,#offThread_jitResumeNSP]   @ cut back native stack
+    b      jitSVShadowRunStart                   @ resume as if cache hit
+                                                 @ expects resume addr in r10
+
     .global dvmJitToInterpPunt
 dvmJitToInterpPunt:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r2,#kSVSPunt                 @ r2<- interpreter entry point
     mov    r3, #0
-    str    r3, [r10, #offThread_inJitCodeCache] @ Back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 
     .global dvmJitToInterpSingleStep
 dvmJitToInterpSingleStep:
-    str    lr,[rGLUE,#offGlue_jitResumeNPC]
-    str    r1,[rGLUE,#offGlue_jitResumeDPC]
+    mov    rPC, r0              @ set up dalvik pc
+    EXPORT_PC()
+    str    lr, [rSELF,#offThread_jitResumeNPC]
+    str    sp, [rSELF,#offThread_jitResumeNSP]
+    str    r1, [rSELF,#offThread_jitResumeDPC]
     mov    r2,#kSVSSingleStep           @ r2<- interpreter entry point
     b      jitSVShadowRunEnd            @ doesn't return
 
+
     .global dvmJitToInterpNoChainNoProfile
 dvmJitToInterpNoChainNoProfile:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r0,rPC                       @ pass our target PC
     mov    r2,#kSVSNoProfile            @ r2<- interpreter entry point
     mov    r3, #0                       @ 0 means !inJitCodeCache
-    str    r3, [r10, #offThread_inJitCodeCache] @ back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 
     .global dvmJitToInterpTraceSelectNoChain
 dvmJitToInterpTraceSelectNoChain:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r0,rPC                       @ pass our target PC
     mov    r2,#kSVSTraceSelect          @ r2<- interpreter entry point
     mov    r3, #0                       @ 0 means !inJitCodeCache
-    str    r3, [r10, #offThread_inJitCodeCache] @ Back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 
     .global dvmJitToInterpTraceSelect
 dvmJitToInterpTraceSelect:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     ldr    r0,[lr, #-1]                 @ pass our target PC
     mov    r2,#kSVSTraceSelect          @ r2<- interpreter entry point
     mov    r3, #0                       @ 0 means !inJitCodeCache
-    str    r3, [r10, #offThread_inJitCodeCache] @ Back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 
     .global dvmJitToInterpBackwardBranch
 dvmJitToInterpBackwardBranch:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     ldr    r0,[lr, #-1]                 @ pass our target PC
     mov    r2,#kSVSBackwardBranch       @ r2<- interpreter entry point
     mov    r3, #0                       @ 0 means !inJitCodeCache
-    str    r3, [r10, #offThread_inJitCodeCache] @ Back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 
     .global dvmJitToInterpNormal
 dvmJitToInterpNormal:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     ldr    r0,[lr, #-1]                 @ pass our target PC
     mov    r2,#kSVSNormal               @ r2<- interpreter entry point
     mov    r3, #0                       @ 0 means !inJitCodeCache
-    str    r3, [r10, #offThread_inJitCodeCache] @ Back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 
     .global dvmJitToInterpNoChain
 dvmJitToInterpNoChain:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r0,rPC                       @ pass our target PC
     mov    r2,#kSVSNoChain              @ r2<- interpreter entry point
     mov    r3, #0                       @ 0 means !inJitCodeCache
-    str    r3, [r10, #offThread_inJitCodeCache] @ Back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
     b      jitSVShadowRunEnd            @ doesn't return
 #else
+
+/*
+ * "longjmp" to a translation after single-stepping.
+ */
+    .global dvmJitResumeTranslation              @ (Thread* self, u4* dFP)
+dvmJitResumeTranslation:
+    mov    rSELF, r0                             @ restore self
+    mov    rPC, r1                               @ restore Dalvik pc
+    mov    rFP, r2                               @ restore Dalvik fp
+    ldr    r0, [rSELF,#offThread_jitResumeNPC]
+    mov    r2, #0
+    str    r2, [rSELF,#offThread_jitResumeNPC]   @ reset resume address
+    ldr    sp, [rSELF,#offThread_jitResumeNSP]   @ cut back native stack
+    bx     r0                                    @ resume translation
+
 /*
  * Return from the translation cache to the interpreter when the compiler is
  * having issues translating/executing a Dalvik instruction. We have to skip
@@ -9933,7 +16217,6 @@ dvmJitToInterpNoChain:
  */
     .global dvmJitToInterpPunt
 dvmJitToInterpPunt:
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    rPC, r0
 #if defined(WITH_JIT_TUNING)
     mov    r0,lr
@@ -9941,34 +16224,39 @@ dvmJitToInterpPunt:
 #endif
     EXPORT_PC()
     mov    r0, #0
-    str    r0, [r10, #offThread_inJitCodeCache] @ Back to the interp land
-    adrl   rIBASE, dvmAsmInstructionStart
+    str    r0, [rSELF, #offThread_inJitCodeCache] @ Back to the interp land
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
     FETCH_INST()
     GET_INST_OPCODE(ip)
     GOTO_OPCODE(ip)
 
 /*
  * Return to the interpreter to handle a single instruction.
+ * We'll use the normal single-stepping mechanism via interpBreak,
+ * but also save the native pc of the resume point in the translation
+ * and the native sp so that we can later do the equivalent of a
+ * longjmp() to resume.
  * On entry:
- *    r0 <= PC
- *    r1 <= PC of resume instruction
+ *    dPC <= Dalvik PC of instrucion to interpret
  *    lr <= resume point in translation
+ *    r1 <= Dalvik PC of next instruction
  */
     .global dvmJitToInterpSingleStep
 dvmJitToInterpSingleStep:
-    str    lr,[rGLUE,#offGlue_jitResumeNPC]
-    str    r1,[rGLUE,#offGlue_jitResumeDPC]
-    mov    r1,#kInterpEntryInstr
-    @ enum is 4 byte in aapcs-EABI
-    str    r1, [rGLUE, #offGlue_entryPoint]
-    mov    rPC,r0
+    mov    rPC, r0              @ set up dalvik pc
     EXPORT_PC()
-
-    adrl   rIBASE, dvmAsmInstructionStart
-    mov    r2,#kJitSingleStep     @ Ask for single step and then revert
-    str    r2,[rGLUE,#offGlue_jitState]
-    mov    r1,#1                  @ set changeInterp to bail to debug interp
-    b      common_gotoBail
+    str    lr, [rSELF,#offThread_jitResumeNPC]
+    str    sp, [rSELF,#offThread_jitResumeNSP]
+    str    r1, [rSELF,#offThread_jitResumeDPC]
+    mov    r1, #1
+    str    r1, [rSELF,#offThread_singleStepCount]  @ just step once
+    mov    r0, rSELF
+    mov    r1, #kSubModeCountedStep
+    bl     dvmEnableSubMode     @ (self, newMode)
+    ldr    rIBASE, [rSELF,#offThread_curHandlerTable]
+    FETCH_INST()
+    GET_INST_OPCODE(ip)
+    GOTO_OPCODE(ip)
 
 /*
  * Return from the translation cache and immediately request
@@ -9979,10 +16267,10 @@ dvmJitToInterpTraceSelectNoChain:
 #if defined(WITH_JIT_TUNING)
     bl     dvmBumpNoChain
 #endif
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r0,rPC
-    bl     dvmJitGetCodeAddr        @ Is there a translation?
-    str    r0, [r10, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
+    mov    r1,rSELF
+    bl     dvmJitGetTraceAddrThread @ (pc, self)
+    str    r0, [rSELF, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
     mov    r1, rPC                  @ arg1 of translation may need this
     mov    lr, #0                   @  in case target is HANDLER_INTERPRET
     cmp    r0,#0                    @ !0 means translation exists
@@ -9997,12 +16285,12 @@ dvmJitToInterpTraceSelectNoChain:
     .global dvmJitToInterpTraceSelect
 dvmJitToInterpTraceSelect:
     ldr    rPC,[lr, #-1]           @ get our target PC
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     add    rINST,lr,#-5            @ save start of chain branch
     add    rINST, #-4              @  .. which is 9 bytes back
     mov    r0,rPC
-    bl     dvmJitGetCodeAddr       @ Is there a translation?
-    str    r0, [r10, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
+    mov    r1,rSELF
+    bl     dvmJitGetTraceAddrThread @ (pc, self)
+    str    r0, [rSELF, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
     cmp    r0,#0
     beq    2f
     mov    r1,rINST
@@ -10015,8 +16303,8 @@ dvmJitToInterpTraceSelect:
 
 /* No translation, so request one if profiling isn't disabled*/
 2:
-    adrl   rIBASE, dvmAsmInstructionStart
-    GET_JIT_PROF_TABLE(r0)
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+    ldr    r0, [rSELF, #offThread_pJitProfTable]
     FETCH_INST()
     cmp    r0, #0
     movne  r2,#kJitTSelectRequestHot   @ ask for trace selection
@@ -10041,15 +16329,15 @@ dvmJitToInterpTraceSelect:
     .global dvmJitToInterpNormal
 dvmJitToInterpNormal:
     ldr    rPC,[lr, #-1]           @ get our target PC
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     add    rINST,lr,#-5            @ save start of chain branch
     add    rINST,#-4               @ .. which is 9 bytes back
 #if defined(WITH_JIT_TUNING)
     bl     dvmBumpNormal
 #endif
     mov    r0,rPC
-    bl     dvmJitGetCodeAddr        @ Is there a translation?
-    str    r0, [r10, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
+    mov    r1,rSELF
+    bl     dvmJitGetTraceAddrThread @ (pc, self)
+    str    r0, [rSELF, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
     cmp    r0,#0
     beq    toInterpreter            @ go if not, otherwise do chain
     mov    r1,rINST
@@ -10069,16 +16357,16 @@ dvmJitToInterpNoChainNoProfile:
 #if defined(WITH_JIT_TUNING)
     bl     dvmBumpNoChain
 #endif
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r0,rPC
-    bl     dvmJitGetCodeAddr        @ Is there a translation?
-    str    r0, [r10, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
+    mov    r1,rSELF
+    bl     dvmJitGetTraceAddrThread @ (pc, self)
+    str    r0, [rSELF, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
     mov    r1, rPC                  @ arg1 of translation may need this
     mov    lr, #0                   @  in case target is HANDLER_INTERPRET
     cmp    r0,#0
     bxne   r0                       @ continue native execution if so
     EXPORT_PC()
-    adrl   rIBASE, dvmAsmInstructionStart
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
     FETCH_INST()
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
@@ -10092,10 +16380,10 @@ dvmJitToInterpNoChain:
 #if defined(WITH_JIT_TUNING)
     bl     dvmBumpNoChain
 #endif
-    ldr    r10, [rGLUE, #offGlue_self]  @ callee saved r10 <- glue->self
     mov    r0,rPC
-    bl     dvmJitGetCodeAddr        @ Is there a translation?
-    str    r0, [r10, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
+    mov    r1,rSELF
+    bl     dvmJitGetTraceAddrThread @ (pc, self)
+    str    r0, [rSELF, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
     mov    r1, rPC                  @ arg1 of translation may need this
     mov    lr, #0                   @  in case target is HANDLER_INTERPRET
     cmp    r0,#0
@@ -10104,29 +16392,35 @@ dvmJitToInterpNoChain:
 
 /*
  * No translation, restore interpreter regs and start interpreting.
- * rGLUE & rFP were preserved in the translated code, and rPC has
+ * rSELF & rFP were preserved in the translated code, and rPC has
  * already been restored by the time we get here.  We'll need to set
  * up rIBASE & rINST, and load the address of the JitTable into r0.
  */
 toInterpreter:
     EXPORT_PC()
-    adrl   rIBASE, dvmAsmInstructionStart
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
     FETCH_INST()
-    GET_JIT_PROF_TABLE(r0)
+    ldr    r0, [rSELF, #offThread_pJitProfTable]
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
     @ NOTE: intended fallthrough
 
 /*
- * Common code to update potential trace start counter, and initiate
- * a trace-build if appropriate.  On entry, rPC should point to the
- * next instruction to execute, and rINST should be already loaded with
- * the next opcode word, and r0 holds a pointer to the jit profile
- * table (pJitProfTable).
+ * Similar to common_updateProfile, but tests for null pJitProfTable
+ * r0 holds pJifProfTAble, rINST is loaded, rPC is current and
+ * rIBASE has been recently refreshed.
  */
 common_testUpdateProfile:
-    cmp     r0,#0
-    GET_INST_OPCODE(ip)
-    GOTO_OPCODE_IFEQ(ip)       @ if not profiling, fallthrough otherwise */
+    cmp     r0, #0               @ JIT switched off?
+    beq     4f                   @ return to interp if so
 
+/*
+ * Common code to update potential trace start counter, and initiate
+ * a trace-build if appropriate.
+ * On entry here:
+ *    r0    <= pJitProfTable (verified non-NULL)
+ *    rPC   <= Dalvik PC
+ *    rINST <= next instruction
+ */
 common_updateProfile:
     eor     r3,rPC,rPC,lsr #12 @ cheap, but fast hash function
     lsl     r3,r3,#(32 - JIT_PROF_SIZE_LOG_2)          @ shift out excess bits
@@ -10136,19 +16430,14 @@ common_updateProfile:
     strb    r1,[r0,r3,lsr #(32 - JIT_PROF_SIZE_LOG_2)] @ and store it
     GOTO_OPCODE_IFNE(ip)       @ if not threshold, fallthrough otherwise */
 
-/*
- * Here, we switch to the debug interpreter to request
- * trace selection.  First, though, check to see if there
- * is already a native translation in place (and, if so,
- * jump to it now).
- */
-    GET_JIT_THRESHOLD(r1)
-    ldr     r10, [rGLUE, #offGlue_self] @ callee saved r10 <- glue->self
+    /* Looks good, reset the counter */
+    ldr     r1, [rSELF, #offThread_jitThreshold]
     strb    r1,[r0,r3,lsr #(32 - JIT_PROF_SIZE_LOG_2)] @ reset counter
     EXPORT_PC()
     mov     r0,rPC
-    bl      dvmJitGetCodeAddr           @ r0<- dvmJitGetCodeAddr(rPC)
-    str     r0, [r10, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
+    mov     r1,rSELF
+    bl      dvmJitGetTraceAddrThread    @ (pc, self)
+    str     r0, [rSELF, #offThread_inJitCodeCache] @ set the inJitCodeCache flag
     mov     r1, rPC                     @ arg1 of translation may need this
     mov     lr, #0                      @  in case target is HANDLER_INTERPRET
     cmp     r0,#0
@@ -10169,9 +16458,8 @@ common_updateProfile:
     cmp     r0, r10                     @ special case?
     bne     jitSVShadowRunStart         @ set up self verification shadow space
     @ Need to clear the inJitCodeCache flag
-    ldr    r10, [rGLUE, #offGlue_self]  @ r10 <- glue->self
     mov    r3, #0                       @ 0 means not in the JIT code cache
-    str    r3, [r10, #offThread_inJitCodeCache] @ back to the interp land
+    str    r3, [rSELF, #offThread_inJitCodeCache] @ back to the interp land
     GET_INST_OPCODE(ip)
     GOTO_OPCODE(ip)
     /* no return */
@@ -10179,243 +16467,155 @@ common_updateProfile:
 
 /*
  * On entry:
- *  r2 is jit state, e.g. kJitTSelectRequest or kJitTSelectRequestHot
+ *  r2 is jit state.
  */
 common_selectTrace:
-    str     r2,[rGLUE,#offGlue_jitState]
-    mov     r2,#kInterpEntryInstr       @ normal entry reason
-    str     r2,[rGLUE,#offGlue_entryPoint]
-    mov     r1,#1                       @ set changeInterp
-    b       common_gotoBail
+    ldrh    r0,[rSELF,#offThread_subMode]
+    ands    r0, #(kSubModeJitTraceBuild | kSubModeJitSV)
+    bne     3f                         @ already doing JIT work, continue
+    str     r2,[rSELF,#offThread_jitState]
+    mov     r0, rSELF
+/*
+ * Call out to validate trace-building request.  If successful,
+ * rIBASE will be swapped to to send us into single-stepping trace
+ * building mode, so we need to refresh before we continue.
+ */
+    EXPORT_PC()
+    SAVE_PC_FP_TO_SELF()                 @ copy of pc/fp to Thread
+    bl      dvmJitCheckTraceRequest
+3:
+    FETCH_INST()
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
+4:
+    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
+    GOTO_OPCODE(ip)
+    /* no return */
+#endif
 
 #if defined(WITH_SELF_VERIFICATION)
 /*
  * Save PC and registers to shadow memory for self verification mode
  * before jumping to native translation.
  * On entry:
- *    rPC, rFP, rGLUE: the values that they should contain
+ *    rPC, rFP, rSELF: the values that they should contain
  *    r10: the address of the target translation.
  */
 jitSVShadowRunStart:
     mov     r0,rPC                      @ r0<- program counter
     mov     r1,rFP                      @ r1<- frame pointer
-    mov     r2,rGLUE                    @ r2<- InterpState pointer
+    mov     r2,rSELF                    @ r2<- self (Thread) pointer
     mov     r3,r10                      @ r3<- target translation
     bl      dvmSelfVerificationSaveState @ save registers to shadow space
     ldr     rFP,[r0,#offShadowSpace_shadowFP] @ rFP<- fp in shadow space
-    add     rGLUE,r0,#offShadowSpace_interpState @ rGLUE<- rGLUE in shadow space
     bx      r10                         @ jump to the translation
 
 /*
- * Restore PC, registers, and interpState to original values
+ * Restore PC, registers, and interpreter state to original values
  * before jumping back to the interpreter.
+ * On entry:
+ *   r0:  dPC
+ *   r2:  self verification state
  */
 jitSVShadowRunEnd:
     mov    r1,rFP                        @ pass ending fp
+    mov    r3,rSELF                      @ pass self ptr for convenience
     bl     dvmSelfVerificationRestoreState @ restore pc and fp values
-    ldr    rPC,[r0,#offShadowSpace_startPC] @ restore PC
-    ldr    rFP,[r0,#offShadowSpace_fp]   @ restore FP
-    ldr    rGLUE,[r0,#offShadowSpace_glue] @ restore InterpState
+    LOAD_PC_FP_FROM_SELF()               @ restore pc, fp
     ldr    r1,[r0,#offShadowSpace_svState] @ get self verification state
     cmp    r1,#0                         @ check for punt condition
     beq    1f
+    @ Set up SV single-stepping
+    mov    r0, rSELF
+    mov    r1, #kSubModeJitSV
+    bl     dvmEnableSubMode              @ (self, subMode)
     mov    r2,#kJitSelfVerification      @ ask for self verification
-    str    r2,[rGLUE,#offGlue_jitState]
-    mov    r2,#kInterpEntryInstr         @ normal entry reason
-    str    r2,[rGLUE,#offGlue_entryPoint]
-    mov    r1,#1                         @ set changeInterp
-    b      common_gotoBail
-
+    str    r2,[rSELF,#offThread_jitState]
+    @ intentional fallthrough
 1:                                       @ exit to interpreter without check
     EXPORT_PC()
-    adrl   rIBASE, dvmAsmInstructionStart
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]
     FETCH_INST()
     GET_INST_OPCODE(ip)
     GOTO_OPCODE(ip)
 #endif
 
-#endif
-
-/*
- * Common code when a backward branch is taken.
- *
- * TODO: we could avoid a branch by just setting r0 and falling through
- * into the common_periodicChecks code, and having a test on r0 at the
- * end determine if we should return to the caller or update & branch to
- * the next instr.
- *
- * On entry:
- *  r9 is PC adjustment *in bytes*
- */
-common_backwardBranch:
-    mov     r0, #kInterpEntryInstr
-    bl      common_periodicChecks
-#if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    cmp     r0,#0
-    bne     common_updateProfile
-    GET_INST_OPCODE(ip)
-    GOTO_OPCODE(ip)
-#else
-    FETCH_ADVANCE_INST_RB(r9)           @ update rPC, load rINST
-    GET_INST_OPCODE(ip)                 @ extract opcode from rINST
-    GOTO_OPCODE(ip)                     @ jump to next instruction
-#endif
-
-
-/*
- * Need to see if the thread needs to be suspended or debugger/profiler
- * activity has begun.  If so, we suspend the thread or side-exit to
- * the debug interpreter as appropriate.
- *
- * The common case is no activity on any of these, so we want to figure
- * that out quickly.  If something is up, we can then sort out what.
- *
- * We want to be fast if the VM was built without debugger or profiler
- * support, but we also need to recognize that the system is usually
- * shipped with both of these enabled.
- *
- * TODO: reduce this so we're just checking a single location.
- *
- * On entry:
- *  r0 is reentry type, e.g. kInterpEntryInstr (for debugger/profiling)
- *  r9 is trampoline PC adjustment *in bytes*
- */
-common_periodicChecks:
-    ldr     r3, [rGLUE, #offGlue_pSelfSuspendCount] @ r3<- &suspendCount
-
-    ldr     r1, [rGLUE, #offGlue_pDebuggerActive]   @ r1<- &debuggerActive
-    ldr     r2, [rGLUE, #offGlue_pActiveProfilers]  @ r2<- &activeProfilers
-
-    ldr     ip, [r3]                    @ ip<- suspendCount (int)
-
-    cmp     r1, #0                      @ debugger enabled?
-    ldrneb  r1, [r1]                    @ yes, r1<- debuggerActive (boolean)
-    ldr     r2, [r2]                    @ r2<- activeProfilers (int)
-    orrne   ip, ip, r1                  @ ip<- suspendCount | debuggerActive
-    orrs    ip, ip, r2                  @ ip<- suspend|debugger|profiler; set Z
-
-    bxeq    lr                          @ all zero, return
-
-    /*
-     * One or more interesting events have happened.  Figure out what.
-     *
-     * If debugging or profiling are compiled in, we need to disambiguate.
-     *
-     * r0 still holds the reentry type.
-     */
-    ldr     ip, [r3]                    @ ip<- suspendCount (int)
-    cmp     ip, #0                      @ want suspend?
-    beq     1f                          @ no, must be debugger/profiler
-
-    stmfd   sp!, {r0, lr}               @ preserve r0 and lr
-#if defined(WITH_JIT)
-    /*
-     * Refresh the Jit's cached copy of profile table pointer.  This pointer
-     * doubles as the Jit's on/off switch.
-     */
-    ldr     r3, [rGLUE, #offGlue_ppJitProfTable] @ r3<-&gDvmJit.pJitProfTable
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
-    ldr     r3, [r3] @ r3 <- pJitProfTable
-    EXPORT_PC()                         @ need for precise GC
-    str     r3, [rGLUE, #offGlue_pJitProfTable] @ refresh Jit's on/off switch
-#else
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- glue->self
-    EXPORT_PC()                         @ need for precise GC
-#endif
-    bl      dvmCheckSuspendPending      @ do full check, suspend if necessary
-    ldmfd   sp!, {r0, lr}               @ restore r0 and lr
-
-    /*
-     * Reload the debugger/profiler enable flags.  We're checking to see
-     * if either of these got set while we were suspended.
-     *
-     * We can't really avoid the #ifdefs here, because the fields don't
-     * exist when the feature is disabled.
-     */
-    ldr     r1, [rGLUE, #offGlue_pDebuggerActive]   @ r1<- &debuggerActive
-    cmp     r1, #0                      @ debugger enabled?
-    ldrneb  r1, [r1]                    @ yes, r1<- debuggerActive (boolean)
-    ldr     r2, [rGLUE, #offGlue_pActiveProfilers]  @ r2<- &activeProfilers
-    ldr     r2, [r2]                    @ r2<- activeProfilers (int)
-
-    orrs    r1, r1, r2
-    beq     2f
-
-1:  @ debugger/profiler enabled, bail out; glue->entryPoint was set above
-    str     r0, [rGLUE, #offGlue_entryPoint]    @ store r0, need for debug/prof
-    add     rPC, rPC, r9                @ update rPC
-    mov     r1, #1                      @ "want switch" = true
-    b       common_gotoBail             @ side exit
-
-2:
-    bx      lr                          @ nothing to do, return
-
-
 /*
  * The equivalent of "goto bail", this calls through the "bail handler".
+ * It will end this interpreter activation, and return to the caller
+ * of dvmMterpStdRun.
  *
- * State registers will be saved to the "glue" area before bailing.
- *
- * On entry:
- *  r1 is "bool changeInterp", indicating if we want to switch to the
- *     other interpreter or just bail all the way out
+ * State registers will be saved to the "thread" area before bailing
+ * debugging purposes
  */
 common_gotoBail:
-    SAVE_PC_FP_TO_GLUE()                @ export state to "glue"
-    mov     r0, rGLUE                   @ r0<- glue ptr
-    b       dvmMterpStdBail             @ call(glue, changeInterp)
+    SAVE_PC_FP_TO_SELF()                @ export state to "thread"
+    mov     r0, rSELF                   @ r0<- self ptr
+    b       dvmMterpStdBail             @ call(self, changeInterp)
 
-    @add     r1, r1, #1                  @ using (boolean+1)
-    @add     r0, rGLUE, #offGlue_jmpBuf  @ r0<- &glue->jmpBuf
-    @bl      _longjmp                    @ does not return
-    @bl      common_abort
-
+/*
+ * The JIT's invoke method needs to remember the callsite class and
+ * target pair.  Save them here so that they are available to
+ * dvmCheckJit following the interpretation of this invoke.
+ */
+#if defined(WITH_JIT)
+save_callsiteinfo:
+    cmp     r9, #0
+    ldrne   r9, [r9, #offObject_clazz]
+    str     r0, [rSELF, #offThread_methodToCall]
+    str     r9, [rSELF, #offThread_callsiteClass]
+    bx      lr
+#endif
 
 /*
  * Common code for method invocation with range.
  *
  * On entry:
- *  r0 is "Method* methodToCall", the method we're trying to call
+ *  r0 is "Method* methodToCall", r9 is "this"
  */
 common_invokeMethodRange:
 .LinvokeNewRange:
+#if defined(WITH_JIT)
+    ldrh    r1, [rSELF, #offThread_subMode]
+    ands    r1, #kSubModeJitTraceBuild
+    blne    save_callsiteinfo
+#endif
     @ prepare to copy args to "outs" area of current frame
     movs    r2, rINST, lsr #8           @ r2<- AA (arg count) -- test for zero
     SAVEAREA_FROM_FP(r10, rFP)          @ r10<- stack save area
     beq     .LinvokeArgsDone            @ if no args, skip the rest
     FETCH(r1, 2)                        @ r1<- CCCC
 
+.LinvokeRangeArgs:
     @ r0=methodToCall, r1=CCCC, r2=count, r10=outs
     @ (very few methods have > 10 args; could unroll for common cases)
     add     r3, rFP, r1, lsl #2         @ r3<- &fp[CCCC]
     sub     r10, r10, r2, lsl #2        @ r10<- "outs" area, for call args
-    ldrh    r9, [r0, #offMethod_registersSize]  @ r9<- methodToCall->regsSize
 1:  ldr     r1, [r3], #4                @ val = *fp++
     subs    r2, r2, #1                  @ count--
     str     r1, [r10], #4               @ *outs++ = val
     bne     1b                          @ ...while count != 0
-    ldrh    r3, [r0, #offMethod_outsSize]   @ r3<- methodToCall->outsSize
     b       .LinvokeArgsDone
 
 /*
  * Common code for method invocation without range.
  *
  * On entry:
- *  r0 is "Method* methodToCall", the method we're trying to call
+ *  r0 is "Method* methodToCall", r9 is "this"
  */
 common_invokeMethodNoRange:
 .LinvokeNewNoRange:
+#if defined(WITH_JIT)
+    ldrh    r1, [rSELF, #offThread_subMode]
+    ands    r1, #kSubModeJitTraceBuild
+    blne    save_callsiteinfo
+#endif
     @ prepare to copy args to "outs" area of current frame
     movs    r2, rINST, lsr #12          @ r2<- B (arg count) -- test for zero
     SAVEAREA_FROM_FP(r10, rFP)          @ r10<- stack save area
     FETCH(r1, 2)                        @ r1<- GFED (load here to hide latency)
-    ldrh    r9, [r0, #offMethod_registersSize]  @ r9<- methodToCall->regsSize
-    ldrh    r3, [r0, #offMethod_outsSize]  @ r3<- methodToCall->outsSize
     beq     .LinvokeArgsDone
 
-    @ r0=methodToCall, r1=GFED, r3=outSize, r2=count, r9=regSize, r10=outs
+    @ r0=methodToCall, r1=GFED, r2=count, r10=outs
 .LinvokeNonRange:
     rsb     r2, r2, #5                  @ r2<- 5-r2
     add     pc, pc, r2, lsl #4          @ computed goto, 4 instrs each
@@ -10442,7 +16642,9 @@ common_invokeMethodNoRange:
     str     r2, [r10, #-4]!             @ *--outs = vD
 0:  @ fall through to .LinvokeArgsDone
 
-.LinvokeArgsDone: @ r0=methodToCall, r3=outSize, r9=regSize
+.LinvokeArgsDone: @ r0=methodToCall
+    ldrh    r9, [r0, #offMethod_registersSize]  @ r9<- methodToCall->regsSize
+    ldrh    r3, [r0, #offMethod_outsSize]  @ r3<- methodToCall->outsSize
     ldr     r2, [r0, #offMethod_insns]  @ r2<- method->insns
     ldr     rINST, [r0, #offMethod_clazz]  @ rINST<- method->clazz
     @ find space for the new stack frame, check for overflow
@@ -10450,9 +16652,10 @@ common_invokeMethodNoRange:
     sub     r1, r1, r9, lsl #2          @ r1<- newFp (old savearea - regsSize)
     SAVEAREA_FROM_FP(r10, r1)           @ r10<- newSaveArea
 @    bl      common_dumpRegs
-    ldr     r9, [rGLUE, #offGlue_interpStackEnd]    @ r9<- interpStackEnd
+    ldr     r9, [rSELF, #offThread_interpStackEnd]    @ r9<- interpStackEnd
     sub     r3, r10, r3, lsl #2         @ r3<- bottom (newsave - outsSize)
     cmp     r3, r9                      @ bottom < interpStackEnd?
+    ldrh    lr, [rSELF, #offThread_subMode]
     ldr     r3, [r0, #offMethod_accessFlags] @ r3<- methodToCall->accessFlags
     blo     .LstackOverflow             @ yes, this frame will overflow stack
 
@@ -10468,6 +16671,11 @@ common_invokeMethodNoRange:
     str     r9, [r10, #offStackSaveArea_returnAddr]
 #endif
     str     r0, [r10, #offStackSaveArea_method]
+
+    @ Profiling?
+    cmp     lr, #0                      @ any special modes happening?
+    bne     2f                          @ go if so
+1:
     tst     r3, #ACC_NATIVE
     bne     .LinvokeNative
 
@@ -10489,18 +16697,19 @@ common_invokeMethodNoRange:
     ldrh    r9, [r2]                        @ r9 <- load INST from new PC
     ldr     r3, [rINST, #offClassObject_pDvmDex] @ r3<- method->clazz->pDvmDex
     mov     rPC, r2                         @ publish new rPC
-    ldr     r2, [rGLUE, #offGlue_self]      @ r2<- glue->self
 
-    @ Update "glue" values for the new method
-    @ r0=methodToCall, r1=newFp, r2=self, r3=newMethodClass, r9=newINST
-    str     r0, [rGLUE, #offGlue_method]    @ glue->method = methodToCall
-    str     r3, [rGLUE, #offGlue_methodClassDex] @ glue->methodClassDex = ...
+    @ Update state values for the new method
+    @ r0=methodToCall, r1=newFp, r3=newMethodClass, r9=newINST
+    str     r0, [rSELF, #offThread_method]    @ self->method = methodToCall
+    str     r3, [rSELF, #offThread_methodClassDex] @ self->methodClassDex = ...
+    mov     r2, #1
+    str     r2, [rSELF, #offThread_debugIsMethodEntry]
 #if defined(WITH_JIT)
-    GET_JIT_PROF_TABLE(r0)
+    ldr     r0, [rSELF, #offThread_pJitProfTable]
     mov     rFP, r1                         @ fp = newFp
     GET_PREFETCHED_OPCODE(ip, r9)           @ extract prefetched opcode from r9
     mov     rINST, r9                       @ publish new rINST
-    str     r1, [r2, #offThread_curFrame]   @ self->curFrame = newFp
+    str     r1, [rSELF, #offThread_curFrame]   @ curFrame = newFp
     cmp     r0,#0
     bne     common_updateProfile
     GOTO_OPCODE(ip)                         @ jump to next instruction
@@ -10508,22 +16717,31 @@ common_invokeMethodNoRange:
     mov     rFP, r1                         @ fp = newFp
     GET_PREFETCHED_OPCODE(ip, r9)           @ extract prefetched opcode from r9
     mov     rINST, r9                       @ publish new rINST
-    str     r1, [r2, #offThread_curFrame]   @ self->curFrame = newFp
+    str     r1, [rSELF, #offThread_curFrame]   @ curFrame = newFp
     GOTO_OPCODE(ip)                         @ jump to next instruction
 #endif
+
+2:
+    @ Profiling - record method entry.  r0: methodToCall
+    stmfd   sp!, {r0-r3}                @ preserve r0-r3
+    str     rPC, [rSELF, #offThread_pc] @ update interpSave.pc
+    mov     r1, r0
+    mov     r0, rSELF
+    bl      dvmReportInvoke             @ (self, method)
+    ldmfd   sp!, {r0-r3}                @ restore r0-r3
+    b       1b
 
 .LinvokeNative:
     @ Prep for the native call
     @ r0=methodToCall, r1=newFp, r10=newSaveArea
-    ldr     r3, [rGLUE, #offGlue_self]      @ r3<- glue->self
-    ldr     r9, [r3, #offThread_jniLocal_topCookie] @ r9<- thread->localRef->...
-    str     r1, [r3, #offThread_curFrame]   @ self->curFrame = newFp
+    ldrh    lr, [rSELF, #offThread_subMode]
+    ldr     r9, [rSELF, #offThread_jniLocal_topCookie]@r9<-thread->localRef->...
+    str     r1, [rSELF, #offThread_curFrame]   @ curFrame = newFp
     str     r9, [r10, #offStackSaveArea_localRefCookie] @newFp->localRefCookie=top
-    mov     r9, r3                      @ r9<- glue->self (preserve)
-
     mov     r2, r0                      @ r2<- methodToCall
     mov     r0, r1                      @ r0<- newFp (points to args)
-    add     r1, rGLUE, #offGlue_retval  @ r1<- &retval
+    add     r1, rSELF, #offThread_retval  @ r1<- &retval
+    mov     r3, rSELF                   @ arg3<- self
 
 #ifdef ASSIST_DEBUGGER
     /* insert fake function header to help gdb find the stack frame */
@@ -10536,40 +16754,56 @@ dalvik_mterp:
 .Lskip:
 #endif
 
-    @mov     lr, pc                      @ set return addr
-    @ldr     pc, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
-    LDR_PC_LR "[r2, #offMethod_nativeFunc]"
+    cmp     lr, #0                      @ any special SubModes active?
+    bne     11f                         @ go handle them if so
+    mov     lr, pc                      @ set return addr
+    ldr     pc, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
+7:
 
-#if defined(WITH_JIT)
-    ldr     r3, [rGLUE, #offGlue_ppJitProfTable] @ Refresh Jit's on/off status
-#endif
-
-    @ native return; r9=self, r10=newSaveArea
+    @ native return; r10=newSaveArea
     @ equivalent to dvmPopJniLocals
     ldr     r0, [r10, #offStackSaveArea_localRefCookie] @ r0<- saved top
-    ldr     r1, [r9, #offThread_exception] @ check for exception
-#if defined(WITH_JIT)
-    ldr     r3, [r3]                    @ r3 <- gDvmJit.pProfTable
-#endif
-    str     rFP, [r9, #offThread_curFrame]  @ self->curFrame = fp
+    ldr     r1, [rSELF, #offThread_exception] @ check for exception
+    str     rFP, [rSELF, #offThread_curFrame]  @ curFrame = fp
     cmp     r1, #0                      @ null?
-    str     r0, [r9, #offThread_jniLocal_topCookie] @ new top <- old top
-#if defined(WITH_JIT)
-    str     r3, [rGLUE, #offGlue_pJitProfTable] @ refresh cached on/off switch
-#endif
+    str     r0, [rSELF, #offThread_jniLocal_topCookie] @ new top <- old top
     bne     common_exceptionThrown      @ no, handle exception
 
     FETCH_ADVANCE_INST(3)               @ advance rPC, load rINST
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
+11:
+    @ r0=newFp, r1=&retval, r2=methodToCall, r3=self, lr=subModes
+    stmfd   sp!, {r0-r3}                @ save all but subModes
+    mov     r0, r2                      @ r0<- methodToCall
+    mov     r1, rSELF
+    mov     r2, rFP
+    bl      dvmReportPreNativeInvoke    @ (methodToCall, self, fp)
+    ldmfd   sp, {r0-r3}                 @ refresh.  NOTE: no sp autoincrement
+
+    @ Call the native method
+    mov     lr, pc                      @ set return addr
+    ldr     pc, [r2, #offMethod_nativeFunc] @ pc<- methodToCall->nativeFunc
+
+    @ Restore the pre-call arguments
+    ldmfd   sp!, {r0-r3}                @ r2<- methodToCall (others unneeded)
+
+    @ Finish up any post-invoke subMode requirements
+    mov     r0, r2                      @ r0<- methodToCall
+    mov     r1, rSELF
+    mov     r2, rFP
+    bl      dvmReportPostNativeInvoke   @ (methodToCall, self, fp)
+    b       7b                          @ resume
+
 .LstackOverflow:    @ r0=methodToCall
     mov     r1, r0                      @ r1<- methodToCall
-    ldr     r0, [rGLUE, #offGlue_self]  @ r0<- self
+    mov     r0, rSELF                   @ r0<- self
     bl      dvmHandleStackOverflow
     b       common_exceptionThrown
 #ifdef ASSIST_DEBUGGER
     .fnend
+    .size   dalvik_mterp, .-dalvik_mterp
 #endif
 
 
@@ -10589,8 +16823,8 @@ dalvik_mterp:
     sub     sp, sp, #8                  @ space for args + pad
     FETCH(ip, 2)                        @ ip<- FEDC or CCCC
     mov     r2, r0                      @ A2<- methodToCall
-    mov     r0, rGLUE                   @ A0<- glue
-    SAVE_PC_FP_TO_GLUE()                @ export state to "glue"
+    mov     r0, rSELF                   @ A0<- self
+    SAVE_PC_FP_TO_SELF()                @ export state to "self"
     mov     r1, r9                      @ A1<- methodCallRange
     mov     r3, rINST, lsr #8           @ A3<- AA
     str     ip, [sp, #0]                @ A4<- ip
@@ -10608,30 +16842,36 @@ dalvik_mterp:
  */
 common_returnFromMethod:
 .LreturnNew:
-    mov     r0, #kInterpEntryReturn
-    mov     r9, #0
-    bl      common_periodicChecks
-
-    SAVEAREA_FROM_FP(r0, rFP)           @ r0<- saveArea (old)
-    ldr     rFP, [r0, #offStackSaveArea_prevFrame] @ fp = saveArea->prevFrame
+    ldrh    lr, [rSELF, #offThread_subMode]
+    SAVEAREA_FROM_FP(r0, rFP)
     ldr     r9, [r0, #offStackSaveArea_savedPc] @ r9 = saveArea->savedPc
+    cmp     lr, #0                      @ any special subMode handling needed?
+    bne     19f
+14:
+    ldr     rFP, [r0, #offStackSaveArea_prevFrame] @ fp = saveArea->prevFrame
     ldr     r2, [rFP, #(offStackSaveArea_method - sizeofStackSaveArea)]
                                         @ r2<- method we're returning to
-    ldr     r3, [rGLUE, #offGlue_self]  @ r3<- glue->self
     cmp     r2, #0                      @ is this a break frame?
+#if defined(WORKAROUND_CORTEX_A9_745320)
+    /* Don't use conditional loads if the HW defect exists */
+    beq     15f
+    ldr     r10, [r2, #offMethod_clazz] @ r10<- method->clazz
+15:
+#else
     ldrne   r10, [r2, #offMethod_clazz] @ r10<- method->clazz
-    mov     r1, #0                      @ "want switch" = false
+#endif
     beq     common_gotoBail             @ break frame, bail out completely
 
+    ldr     rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
     PREFETCH_ADVANCE_INST(rINST, r9, 3) @ advance r9, update new rINST
-    str     r2, [rGLUE, #offGlue_method]@ glue->method = newSave->method
+    str     r2, [rSELF, #offThread_method]@ self->method = newSave->method
     ldr     r1, [r10, #offClassObject_pDvmDex]   @ r1<- method->clazz->pDvmDex
-    str     rFP, [r3, #offThread_curFrame]  @ self->curFrame = fp
+    str     rFP, [rSELF, #offThread_curFrame]  @ curFrame = fp
 #if defined(WITH_JIT)
     ldr     r10, [r0, #offStackSaveArea_returnAddr] @ r10 = saveArea->returnAddr
     mov     rPC, r9                     @ publish new rPC
-    str     r1, [rGLUE, #offGlue_methodClassDex]
-    str     r10, [r3, #offThread_inJitCodeCache]  @ may return to JIT'ed land
+    str     r1, [rSELF, #offThread_methodClassDex]
+    str     r10, [rSELF, #offThread_inJitCodeCache]  @ may return to JIT'ed land
     cmp     r10, #0                      @ caller is compiled code
     blxne   r10
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
@@ -10639,17 +16879,28 @@ common_returnFromMethod:
 #else
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     mov     rPC, r9                     @ publish new rPC
-    str     r1, [rGLUE, #offGlue_methodClassDex]
+    str     r1, [rSELF, #offThread_methodClassDex]
     GOTO_OPCODE(ip)                     @ jump to next instruction
 #endif
+
+19:
+    @ Handle special actions
+    @ On entry, r0: StackSaveArea
+    ldr     r1, [r0, #offStackSaveArea_prevFrame]  @ r2<- prevFP
+    str     rPC, [rSELF, #offThread_pc] @ update interpSave.pc
+    str     r1, [rSELF, #offThread_curFrame]   @ update interpSave.curFrame
+    mov     r0, rSELF
+    bl      dvmReportReturn             @ (self)
+    SAVEAREA_FROM_FP(r0, rFP)           @ restore StackSaveArea
+    b       14b                         @ continue
 
     /*
      * Return handling, calls through "glue code".
      */
      .if    0
 .LreturnOld:
-    SAVE_PC_FP_TO_GLUE()                @ export state
-    mov     r0, rGLUE                   @ arg to function
+    SAVE_PC_FP_TO_SELF()                @ export state
+    mov     r0, rSELF                   @ arg to function
     bl      dvmMterp_returnFromMethod
     b       common_resumeAfterGlueCall
     .endif
@@ -10668,27 +16919,34 @@ common_returnFromMethod:
 dvmMterpCommonExceptionThrown:
 common_exceptionThrown:
 .LexceptionNew:
-    mov     r0, #kInterpEntryThrow
-    mov     r9, #0
-    bl      common_periodicChecks
 
-    ldr     r10, [rGLUE, #offGlue_self] @ r10<- glue->self
-    ldr     r9, [r10, #offThread_exception] @ r9<- self->exception
-    mov     r1, r10                     @ r1<- self
+    EXPORT_PC()
+
+    mov     r0, rSELF
+    bl      dvmCheckSuspendPending
+
+    ldr     r9, [rSELF, #offThread_exception] @ r9<- self->exception
+    mov     r1, rSELF                   @ r1<- self
     mov     r0, r9                      @ r0<- exception
     bl      dvmAddTrackedAlloc          @ don't let the exception be GCed
+    ldrh    r2, [rSELF, #offThread_subMode]  @ get subMode flags
     mov     r3, #0                      @ r3<- NULL
-    str     r3, [r10, #offThread_exception] @ self->exception = NULL
+    str     r3, [rSELF, #offThread_exception] @ self->exception = NULL
 
+    @ Special subMode?
+    cmp     r2, #0                      @ any special subMode handling needed?
+    bne     7f                          @ go if so
+8:
     /* set up args and a local for "&fp" */
     /* (str sp, [sp, #-4]!  would be perfect here, but is discouraged) */
     str     rFP, [sp, #-4]!             @ *--sp = fp
     mov     ip, sp                      @ ip<- &fp
     mov     r3, #0                      @ r3<- false
     str     ip, [sp, #-4]!              @ *--sp = &fp
-    ldr     r1, [rGLUE, #offGlue_method] @ r1<- glue->method
-    mov     r0, r10                     @ r0<- self
+    ldr     r1, [rSELF, #offThread_method] @ r1<- self->method
+    mov     r0, rSELF                   @ r0<- self
     ldr     r1, [r1, #offMethod_insns]  @ r1<- method->insns
+    ldrh    lr, [rSELF, #offThread_subMode]  @ lr<- subMode flags
     mov     r2, r9                      @ r2<- exception
     sub     r1, rPC, r1                 @ r1<- pc - method->insns
     mov     r1, r1, asr #1              @ r1<- offset in code units
@@ -10697,11 +16955,11 @@ common_exceptionThrown:
     bl      dvmFindCatchBlock           @ call(self, relPc, exc, scan?, &fp)
 
     /* fix earlier stack overflow if necessary; may trash rFP */
-    ldrb    r1, [r10, #offThread_stackOverflowed]
+    ldrb    r1, [rSELF, #offThread_stackOverflowed]
     cmp     r1, #0                      @ did we overflow earlier?
     beq     1f                          @ no, skip ahead
     mov     rFP, r0                     @ save relPc result in rFP
-    mov     r0, r10                     @ r0<- self
+    mov     r0, rSELF                   @ r0<- self
     mov     r1, r9                      @ r1<- exception
     bl      dvmCleanupStackOverflow     @ call(self)
     mov     r0, rFP                     @ restore result
@@ -10713,33 +16971,43 @@ common_exceptionThrown:
     add     sp, sp, #8                  @ restore stack
     bmi     .LnotCaughtLocally
 
-    /* adjust locals to match self->curFrame and updated PC */
+    /* adjust locals to match self->interpSave.curFrame and updated PC */
     SAVEAREA_FROM_FP(r1, rFP)           @ r1<- new save area
     ldr     r1, [r1, #offStackSaveArea_method] @ r1<- new method
-    str     r1, [rGLUE, #offGlue_method]    @ glue->method = new method
+    str     r1, [rSELF, #offThread_method]  @ self->method = new method
     ldr     r2, [r1, #offMethod_clazz]      @ r2<- method->clazz
     ldr     r3, [r1, #offMethod_insns]      @ r3<- method->insns
     ldr     r2, [r2, #offClassObject_pDvmDex] @ r2<- method->clazz->pDvmDex
     add     rPC, r3, r0, asl #1             @ rPC<- method->insns + catchRelPc
-    str     r2, [rGLUE, #offGlue_methodClassDex] @ glue->pDvmDex = meth...
+    str     r2, [rSELF, #offThread_methodClassDex] @ self->pDvmDex = meth...
 
     /* release the tracked alloc on the exception */
     mov     r0, r9                      @ r0<- exception
-    mov     r1, r10                     @ r1<- self
+    mov     r1, rSELF                   @ r1<- self
     bl      dvmReleaseTrackedAlloc      @ release the exception
 
     /* restore the exception if the handler wants it */
+    ldr    rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh rIBASE
     FETCH_INST()                        @ load rINST from rPC
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     cmp     ip, #OP_MOVE_EXCEPTION      @ is it "move-exception"?
-    streq   r9, [r10, #offThread_exception] @ yes, restore the exception
+    streq   r9, [rSELF, #offThread_exception] @ yes, restore the exception
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
-.LnotCaughtLocally: @ r9=exception, r10=self
+    @ Manage debugger bookkeeping
+7:
+    str     rPC, [rSELF, #offThread_pc]     @ update interpSave.pc
+    str     rFP, [rSELF, #offThread_curFrame]     @ update interpSave.curFrame
+    mov     r0, rSELF                       @ arg0<- self
+    mov     r1, r9                          @ arg1<- exception
+    bl      dvmReportExceptionThrow         @ (self, exception)
+    b       8b                              @ resume with normal handling
+
+.LnotCaughtLocally: @ r9=exception
     /* fix stack overflow if necessary */
-    ldrb    r1, [r10, #offThread_stackOverflowed]
+    ldrb    r1, [rSELF, #offThread_stackOverflowed]
     cmp     r1, #0                      @ did we overflow earlier?
-    movne   r0, r10                     @ if yes: r0<- self
+    movne   r0, rSELF                   @ if yes: r0<- self
     movne   r1, r9                      @ if yes: r1<- exception
     blne    dvmCleanupStackOverflow     @ if yes: call(self)
 
@@ -10748,14 +17016,14 @@ common_exceptionThrown:
     /* call __android_log_print(prio, tag, format, ...) */
     /* "Exception %s from %s:%d not caught locally" */
     @ dvmLineNumFromPC(method, pc - method->insns)
-    ldr     r0, [rGLUE, #offGlue_method]
+    ldr     r0, [rSELF, #offThread_method]
     ldr     r1, [r0, #offMethod_insns]
     sub     r1, rPC, r1
     asr     r1, r1, #1
     bl      dvmLineNumFromPC
     str     r0, [sp, #-4]!
     @ dvmGetMethodSourceFile(method)
-    ldr     r0, [rGLUE, #offGlue_method]
+    ldr     r0, [rSELF, #offThread_method]
     bl      dvmGetMethodSourceFile
     str     r0, [sp, #-4]!
     @ exception->clazz->descriptor
@@ -10767,11 +17035,10 @@ common_exceptionThrown:
     mov     r0, #3                      @ LOG_DEBUG
     bl      __android_log_print
 #endif
-    str     r9, [r10, #offThread_exception] @ restore exception
+    str     r9, [rSELF, #offThread_exception] @ restore exception
     mov     r0, r9                      @ r0<- exception
-    mov     r1, r10                     @ r1<- self
+    mov     r1, rSELF                   @ r1<- self
     bl      dvmReleaseTrackedAlloc      @ release the exception
-    mov     r1, #0                      @ "want switch" = false
     b       common_gotoBail             @ bail out
 
 
@@ -10780,41 +17047,59 @@ common_exceptionThrown:
      */
     .if     0
 .LexceptionOld:
-    SAVE_PC_FP_TO_GLUE()                @ export state
-    mov     r0, rGLUE                   @ arg to function
+    SAVE_PC_FP_TO_SELF()                @ export state
+    mov     r0, rSELF                   @ arg to function
     bl      dvmMterp_exceptionThrown
     b       common_resumeAfterGlueCall
     .endif
 
+#if defined(WITH_JIT)
+    /*
+     * If the JIT is actively building a trace we need to make sure
+     * that the field is fully resolved before including the current
+     * instruction.
+     *
+     * On entry:
+     *     r10: &dvmDex->pResFields[field]
+     *     r0:  field pointer (must preserve)
+     */
+common_verifyField:
+    ldrh    r3, [rSELF, #offThread_subMode]  @ r3 <- submode byte
+    ands    r3, #kSubModeJitTraceBuild
+    bxeq    lr                          @ Not building trace, continue
+    ldr     r1, [r10]                   @ r1<- reload resolved StaticField ptr
+    cmp     r1, #0                      @ resolution complete?
+    bxne    lr                          @ yes, continue
+    stmfd   sp!, {r0-r2,lr}             @ save regs
+    mov     r0, rSELF
+    mov     r1, rPC
+    bl      dvmJitEndTraceSelect        @ (self,pc) end trace before this inst
+    ldmfd   sp!, {r0-r2, lr}
+    bx      lr                          @ return
+#endif
 
 /*
  * After returning from a "glued" function, pull out the updated
  * values and start executing at the next instruction.
  */
 common_resumeAfterGlueCall:
-    LOAD_PC_FP_FROM_GLUE()              @ pull rPC and rFP out of glue
+    LOAD_PC_FP_FROM_SELF()              @ pull rPC and rFP out of thread
+    ldr     rIBASE, [rSELF, #offThread_curHandlerTable]  @ refresh
     FETCH_INST()                        @ load rINST from rPC
     GET_INST_OPCODE(ip)                 @ extract opcode from rINST
     GOTO_OPCODE(ip)                     @ jump to next instruction
 
 /*
- * Invalid array index.
+ * Invalid array index. Note that our calling convention is strange; we use r1
+ * and r3 because those just happen to be the registers all our callers are
+ * using. We move r3 before calling the C function, but r1 happens to match.
+ * r1: index
+ * r3: size
  */
 common_errArrayIndex:
     EXPORT_PC()
-    ldr     r0, strArrayIndexException
-    mov     r1, #0
-    bl      dvmThrowException
-    b       common_exceptionThrown
-
-/*
- * Invalid array value.
- */
-common_errArrayStore:
-    EXPORT_PC()
-    ldr     r0, strArrayStoreException
-    mov     r1, #0
-    bl      dvmThrowException
+    mov     r0, r3
+    bl      dvmThrowArrayIndexOutOfBoundsException
     b       common_exceptionThrown
 
 /*
@@ -10822,29 +17107,28 @@ common_errArrayStore:
  */
 common_errDivideByZero:
     EXPORT_PC()
-    ldr     r0, strArithmeticException
-    ldr     r1, strDivideByZero
-    bl      dvmThrowException
+    ldr     r0, strDivideByZero
+    bl      dvmThrowArithmeticException
     b       common_exceptionThrown
 
 /*
  * Attempt to allocate an array with a negative size.
+ * On entry: length in r1
  */
 common_errNegativeArraySize:
     EXPORT_PC()
-    ldr     r0, strNegativeArraySizeException
-    mov     r1, #0
-    bl      dvmThrowException
+    mov     r0, r1                                @ arg0 <- len
+    bl      dvmThrowNegativeArraySizeException    @ (len)
     b       common_exceptionThrown
 
 /*
  * Invocation of a non-existent method.
+ * On entry: method name in r1
  */
 common_errNoSuchMethod:
     EXPORT_PC()
-    ldr     r0, strNoSuchMethodError
-    mov     r1, #0
-    bl      dvmThrowException
+    mov     r0, r1
+    bl      dvmThrowNoSuchMethodError
     b       common_exceptionThrown
 
 /*
@@ -10854,9 +17138,8 @@ common_errNoSuchMethod:
  */
 common_errNullObject:
     EXPORT_PC()
-    ldr     r0, strNullPointerException
-    mov     r1, #0
-    bl      dvmThrowException
+    mov     r0, #0
+    bl      dvmThrowNullPointerException
     b       common_exceptionThrown
 
 /*
@@ -10992,21 +17275,8 @@ dvmConfigureFP:
  * String references, must be close to the code that uses them.
  */
     .align  2
-strArithmeticException:
-    .word   .LstrArithmeticException
-strArrayIndexException:
-    .word   .LstrArrayIndexException
-strArrayStoreException:
-    .word   .LstrArrayStoreException
 strDivideByZero:
     .word   .LstrDivideByZero
-strNegativeArraySizeException:
-    .word   .LstrNegativeArraySizeException
-strNoSuchMethodError:
-    .word   .LstrNoSuchMethodError
-strNullPointerException:
-    .word   .LstrNullPointerException
-
 strLogTag:
     .word   .LstrLogTag
 strExceptionNotCaughtLocally:
@@ -11034,29 +17304,10 @@ strPrintLong:
 
 .LstrBadEntryPoint:
     .asciz  "Bad entry point %d\n"
-.LstrArithmeticException:
-    .asciz  "Ljava/lang/ArithmeticException;"
-.LstrArrayIndexException:
-    .asciz  "Ljava/lang/ArrayIndexOutOfBoundsException;"
-.LstrArrayStoreException:
-    .asciz  "Ljava/lang/ArrayStoreException;"
-.LstrClassCastException:
-    .asciz  "Ljava/lang/ClassCastException;"
-.LstrDivideByZero:
-    .asciz  "divide by zero"
 .LstrFilledNewArrayNotImpl:
     .asciz  "filled-new-array only implemented for objects and 'int'"
-.LstrInternalError:
-    .asciz  "Ljava/lang/InternalError;"
-.LstrInstantiationError:
-    .asciz  "Ljava/lang/InstantiationError;"
-.LstrNegativeArraySizeException:
-    .asciz  "Ljava/lang/NegativeArraySizeException;"
-.LstrNoSuchMethodError:
-    .asciz  "Ljava/lang/NoSuchMethodError;"
-.LstrNullPointerException:
-    .asciz  "Ljava/lang/NullPointerException;"
-
+.LstrDivideByZero:
+    .asciz  "divide by zero"
 .LstrLogTag:
     .asciz  "mterp"
 .LstrExceptionNotCaughtLocally:
@@ -11067,7 +17318,7 @@ strPrintLong:
 .LstrSqueak:
     .asciz  "<%d>"
 .LstrPrintHex:
-    .asciz  "<0x%x>"
+    .asciz  "<%#x>"
 .LstrPrintLong:
     .asciz  "<%lld>"
 

@@ -13,19 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef _DALVIK_HEAPDEBUG
-#define _DALVIK_HEAPDEBUG
+#ifndef DALVIK_HEAPDEBUG_H_
+#define DALVIK_HEAPDEBUG_H_
 
-typedef enum HeapDebugInfoType {
+enum HeapDebugInfoType {
     kVirtualHeapSize = 0,
     kNativeHeapSize = 1,
     kVirtualHeapAllocated = 2,
     kNativeHeapAllocated = 3,
-} HeapDebugInfoType;
+    kVirtualHeapMaximumSize = 4
+};
 
 /* Return the specified value.
  * Returns -1 if the type is unknown.
  */
 int dvmGetHeapDebugInfo(HeapDebugInfoType info);
 
-#endif  // _DALVIK_HEAPDEBUG
+#endif  // DALVIK_HEAPDEBUG_H_

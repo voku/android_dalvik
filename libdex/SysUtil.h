@@ -17,8 +17,8 @@
 /*
  * System utilities.
  */
-#ifndef _LIBDEX_SYSUTIL
-#define _LIBDEX_SYSUTIL
+#ifndef LIBDEX_SYSUTIL_H_
+#define LIBDEX_SYSUTIL_H_
 
 #include <sys/types.h>
 
@@ -31,18 +31,22 @@
  *
  * Must be a power of 2.
  */
+#ifdef PAGE_SHIFT
+#define SYSTEM_PAGE_SIZE        (1<<PAGE_SHIFT)
+#else
 #define SYSTEM_PAGE_SIZE        4096
+#endif
 
 /*
  * Use this to keep track of mapped segments.
  */
-typedef struct MemMapping {
+struct MemMapping {
     void*   addr;           /* start of data */
     size_t  length;         /* length of data */
 
     void*   baseAddr;       /* page-aligned base address */
     size_t  baseLength;     /* length of mapping */
-} MemMapping;
+};
 
 /*
  * Copy a map.
@@ -113,4 +117,10 @@ void sysReleaseShmem(MemMapping* pMap);
  */
 int sysWriteFully(int fd, const void* buf, size_t count, const char* logMsg);
 
-#endif /*_DALVIK_SYSUTIL*/
+/*
+ * Copy the given number of bytes from one fd to another. Returns
+ * 0 on success, -1 on failure.
+ */
+int sysCopyFileToFile(int outFd, int inFd, size_t count);
+
+#endif  // LIBDEX_SYSUTIL_H_

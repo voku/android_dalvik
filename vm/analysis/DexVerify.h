@@ -17,29 +17,41 @@
 /*
  * Dalvik classfile verification.
  */
-#ifndef _DALVIK_DEXVERIFY
-#define _DALVIK_DEXVERIFY
+#ifndef DALVIK_DEXVERIFY_H_
+#define DALVIK_DEXVERIFY_H_
 
 /*
  * Global verification mode.  These must be in order from least verification
  * to most.  If we're using "exact GC", we may need to perform some of
  * the verification steps anyway.
  */
-typedef enum {
+enum DexClassVerifyMode {
     VERIFY_MODE_UNKNOWN = 0,
     VERIFY_MODE_NONE,
     VERIFY_MODE_REMOTE,
     VERIFY_MODE_ALL
-} DexClassVerifyMode;
+};
 
-bool dvmVerificationStartup(void);
-void dvmVerificationShutdown(void);
+/* some verifier counters, for debugging */
+struct VerifierStats {
+    size_t methodsExamined;    /* number of methods examined */
+    size_t monEnterMethods;    /* number of methods with monitor-enter */
+    size_t instrsExamined;     /* incr on first visit of instruction */
+    size_t instrsReexamined;   /* incr on each repeat visit of instruction */
+    size_t copyRegCount;       /* calls from updateRegisters->copyRegisters */
+    size_t mergeRegCount;      /* calls from updateRegisters->merge */
+    size_t mergeRegChanged;    /* calls from updateRegisters->merge, changed */
+    size_t uninitSearches;     /* times we've had to search the uninit table */
+    size_t biggestAlloc;       /* largest RegisterLine table alloc */
+};
 
 /*
- * Perform verification on all classes loaded from this DEX file.  If
- * enabled, it must happen before optimization.
+ * Certain types of instructions can be GC points.  To support precise
+ * GC, all such instructions must export the PC in the interpreter,
+ * or the GC won't be able to identify the current PC for the thread.
  */
-bool dvmVerifyAllClasses(DexFile* pDexFile);
+#define VERIFY_GC_INST_MASK (kInstrCanBranch | kInstrCanSwitch |\
+                             kInstrCanThrow | kInstrCanReturn)
 
 /*
  * Verify a single class.
@@ -51,4 +63,4 @@ bool dvmVerifyClass(ClassObject* clazz);
  */
 void dvmFreeRegisterMap(RegisterMap* pMap);
 
-#endif /*_DALVIK_DEXVERIFY*/
+#endif  // DALVIK_DEXVERIFY_H_

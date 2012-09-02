@@ -17,8 +17,8 @@
 /*
  * Helper functions to access data fields in Objects.
  */
-#ifndef _DALVIK_OO_OBJECTINLINES
-#define _DALVIK_OO_OBJECTINLINES
+#ifndef DALVIK_OO_OBJECTINLINES_H_
+#define DALVIK_OO_OBJECTINLINES_H_
 
 /*
  * Store a single value in the array, and if the value isn't null,
@@ -26,7 +26,7 @@
  */
 INLINE void dvmSetObjectArrayElement(const ArrayObject* obj, int index,
                                      Object* val) {
-    ((Object **)(obj)->contents)[index] = val;
+    ((Object **)(void *)(obj)->contents)[index] = val;
     if (val != NULL) {
         dvmWriteBarrierArray(obj, index, index + 1);
     }
@@ -105,20 +105,20 @@ INLINE float dvmGetFieldFloatVolatile(const Object* obj, int offset) {
     return alias.fval;
 }
 INLINE s8 dvmGetFieldLongVolatile(const Object* obj, int offset) {
-    const s8* addr = BYTE_OFFSET(obj, offset);
+    const s8* addr = (const s8*)BYTE_OFFSET(obj, offset);
     s8 val = dvmQuasiAtomicRead64(addr);
     ANDROID_MEMBAR_FULL();
     return val;
 }
 INLINE double dvmGetFieldDoubleVolatile(const Object* obj, int offset) {
     union { s8 lval; double dval; } alias;
-    const s8* addr = BYTE_OFFSET(obj, offset);
+    const s8* addr = (const s8*)BYTE_OFFSET(obj, offset);
     alias.lval = dvmQuasiAtomicRead64(addr);
     ANDROID_MEMBAR_FULL();
     return alias.dval;
 }
 INLINE Object* dvmGetFieldObjectVolatile(const Object* obj, int offset) {
-    void** ptr = &((JValue*)BYTE_OFFSET(obj, offset))->l;
+    Object** ptr = &((JValue*)BYTE_OFFSET(obj, offset))->l;
     return (Object*)android_atomic_acquire_load((int32_t*)ptr);
 }
 
@@ -147,7 +147,7 @@ INLINE void dvmSetFieldDouble(Object* obj, int offset, double val) {
     ((JValue*)BYTE_OFFSET(obj, offset))->d = val;
 }
 INLINE void dvmSetFieldObject(Object* obj, int offset, Object* val) {
-    JValue* lhs = BYTE_OFFSET(obj, offset);
+    JValue* lhs = (JValue*)BYTE_OFFSET(obj, offset);
     lhs->l = val;
     if (val != NULL) {
         dvmWriteBarrierField(obj, &lhs->l);
@@ -155,7 +155,14 @@ INLINE void dvmSetFieldObject(Object* obj, int offset, Object* val) {
 }
 INLINE void dvmSetFieldIntVolatile(Object* obj, int offset, s4 val) {
     s4* ptr = &((JValue*)BYTE_OFFSET(obj, offset))->i;
-    android_atomic_release_store(val, ptr);
+    /*
+     * TODO: add an android_atomic_synchronization_store() function and
+     * use it in the 32-bit volatile set handlers.  On some platforms we
+     * can use a fast atomic instruction and avoid the barriers.
+     */
+    ANDROID_MEMBAR_STORE();
+    *ptr = val;
+    ANDROID_MEMBAR_FULL();
 }
 INLINE void dvmSetFieldBooleanVolatile(Object* obj, int offset, bool val) {
     dvmSetFieldIntVolatile(obj, offset, val);
@@ -175,9 +182,8 @@ INLINE void dvmSetFieldFloatVolatile(Object* obj, int offset, float val) {
     dvmSetFieldIntVolatile(obj, offset, alias.ival);
 }
 INLINE void dvmSetFieldLongVolatile(Object* obj, int offset, s8 val) {
-    s8* addr = BYTE_OFFSET(obj, offset);
-    ANDROID_MEMBAR_FULL();
-    dvmQuasiAtomicSwap64(val, addr);
+    s8* addr = (s8*)BYTE_OFFSET(obj, offset);
+    dvmQuasiAtomicSwap64Sync(val, addr);
 }
 INLINE void dvmSetFieldDoubleVolatile(Object* obj, int offset, double val) {
     union { s8 lval; double dval; } alias;
@@ -185,8 +191,10 @@ INLINE void dvmSetFieldDoubleVolatile(Object* obj, int offset, double val) {
     dvmSetFieldLongVolatile(obj, offset, alias.lval);
 }
 INLINE void dvmSetFieldObjectVolatile(Object* obj, int offset, Object* val) {
-    void** ptr = &((JValue*)BYTE_OFFSET(obj, offset))->l;
-    android_atomic_release_store((int32_t)val, (int32_t*)ptr);
+    Object** ptr = &((JValue*)BYTE_OFFSET(obj, offset))->l;
+    ANDROID_MEMBAR_STORE();
+    *ptr = val;
+    ANDROID_MEMBAR_FULL();
     if (val != NULL) {
         dvmWriteBarrierField(obj, ptr);
     }
@@ -266,7 +274,7 @@ INLINE double dvmGetStaticFieldDoubleVolatile(const StaticField* sfield) {
     return alias.dval;
 }
 INLINE Object* dvmGetStaticFieldObjectVolatile(const StaticField* sfield) {
-    void* const* ptr = &(sfield->value.l);
+    Object* const* ptr = &(sfield->value.l);
     return (Object*)android_atomic_acquire_load((int32_t*)ptr);
 }
 
@@ -297,12 +305,14 @@ INLINE void dvmSetStaticFieldDouble(StaticField* sfield, double val) {
 INLINE void dvmSetStaticFieldObject(StaticField* sfield, Object* val) {
     sfield->value.l = val;
     if (val != NULL) {
-        dvmWriteBarrierField((Object *)sfield->field.clazz, &sfield->value.l);
+        dvmWriteBarrierField(sfield->clazz, &sfield->value.l);
     }
 }
 INLINE void dvmSetStaticFieldIntVolatile(StaticField* sfield, s4 val) {
     s4* ptr = &sfield->value.i;
-    android_atomic_release_store(val, ptr);
+    ANDROID_MEMBAR_STORE();
+    *ptr = val;
+    ANDROID_MEMBAR_FULL();
 }
 INLINE void dvmSetStaticFieldBooleanVolatile(StaticField* sfield, bool val) {
     dvmSetStaticFieldIntVolatile(sfield, val);
@@ -323,8 +333,7 @@ INLINE void dvmSetStaticFieldFloatVolatile(StaticField* sfield, float val) {
 }
 INLINE void dvmSetStaticFieldLongVolatile(StaticField* sfield, s8 val) {
     s8* addr = &sfield->value.j;
-    ANDROID_MEMBAR_FULL();
-    dvmQuasiAtomicSwap64(val, addr);
+    dvmQuasiAtomicSwap64Sync(val, addr);
 }
 INLINE void dvmSetStaticFieldDoubleVolatile(StaticField* sfield, double val) {
     union { s8 lval; double dval; } alias;
@@ -332,11 +341,13 @@ INLINE void dvmSetStaticFieldDoubleVolatile(StaticField* sfield, double val) {
     dvmSetStaticFieldLongVolatile(sfield, alias.lval);
 }
 INLINE void dvmSetStaticFieldObjectVolatile(StaticField* sfield, Object* val) {
-    void** ptr = &(sfield->value.l);
-    android_atomic_release_store((int32_t)val, (int32_t*)ptr);
+    Object** ptr = &(sfield->value.l);
+    ANDROID_MEMBAR_STORE();
+    *ptr = val;
+    ANDROID_MEMBAR_FULL();
     if (val != NULL) {
-        dvmWriteBarrierField((Object *)sfield->field.clazz, &sfield->value.l);
+        dvmWriteBarrierField(sfield->clazz, &sfield->value.l);
     }
 }
 
-#endif /*_DALVIK_OO_OBJECTINLINES*/
+#endif  // DALVIK_OO_OBJECTINLINES_H_

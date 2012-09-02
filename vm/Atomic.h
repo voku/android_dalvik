@@ -17,8 +17,8 @@
 /*
  * Atomic operations
  */
-#ifndef _DALVIK_ATOMIC
-#define _DALVIK_ATOMIC
+#ifndef DALVIK_ATOMIC_H_
+#define DALVIK_ATOMIC_H_
 
 #include <cutils/atomic.h>          /* use common Android atomic ops */
 #include <cutils/atomic-inline.h>   /* and some uncommon ones */
@@ -31,19 +31,26 @@
  * quasiatomic operations that are performed on partially-overlapping
  * memory.
  *
- * None of these provide a memory barrier.
+ * Only the "Sync" versions of these provide a memory barrier.
  */
 
 /*
  * Swap the 64-bit value at "addr" with "value".  Returns the previous
  * value.
  */
-int64_t dvmQuasiAtomicSwap64(int64_t value, volatile int64_t* addr);
+extern "C" int64_t dvmQuasiAtomicSwap64(int64_t value, volatile int64_t* addr);
+
+/*
+ * Swap the 64-bit value at "addr" with "value".  Returns the previous
+ * value.  Provides memory barriers.
+ */
+extern "C" int64_t dvmQuasiAtomicSwap64Sync(int64_t value,
+                                            volatile int64_t* addr);
 
 /*
  * Read the 64-bit value at "addr".
  */
-int64_t dvmQuasiAtomicRead64(volatile const int64_t* addr);
+extern "C" int64_t dvmQuasiAtomicRead64(volatile const int64_t* addr);
 
 /*
  * If the value at "addr" is equal to "oldvalue", replace it with "newvalue"
@@ -52,4 +59,4 @@ int64_t dvmQuasiAtomicRead64(volatile const int64_t* addr);
 int dvmQuasiAtomicCas64(int64_t oldvalue, int64_t newvalue,
         volatile int64_t* addr);
 
-#endif /*_DALVIK_ATOMIC*/
+#endif  // DALVIK_ATOMIC_H_
