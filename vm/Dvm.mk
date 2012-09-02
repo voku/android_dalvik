@@ -230,8 +230,8 @@ LOCAL_C_INCLUDES += \
 MTERP_ARCH_KNOWN := false
 
 ifeq ($(dvm_arch),arm)
-  #dvm_arch_variant := armv7-a
-  #LOCAL_CFLAGS += -march=armv7-a -mfloat-abi=softfp -mfpu=vfp
+  dvm_arch_variant := armv7-a-neon
+  LOCAL_CFLAGS += -march=armv7-a -mfloat-abi=softfp -mfpu=neon -O3
   LOCAL_CFLAGS += -Werror
   MTERP_ARCH_KNOWN := true
   # Select architecture-specific sources (armv5te, armv7-a, etc.)
